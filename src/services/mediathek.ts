@@ -20,6 +20,7 @@ import {
   QualityPreference,
 } from "./newznab";
 import { matchMovieItems } from "./movie-matcher";
+import { hasPartMarker, stripBroadcastAnnotations } from "@/lib/titles";
 import { searchMovieByTitle } from "./tmdb";
 import type {
   ApiResultItem,
@@ -201,18 +202,9 @@ function formatTitle(title: string): string {
   return formatted;
 }
 
-/**
- * Mediathek titles carry broadcast/accessibility annotations in parentheses,
- * e.g. "Lost Country (Originalversion mit Untertitel)" or "Tatort
- * (Audiodeskription)". They are not part of the film's name and keep Radarr
- * from matching the release, so strip them before building a release title.
- */
-const BROADCAST_ANNOTATION =
-  /\s*\([^()]*(?:Untertitel|Audiodeskription|Originalversion|Originalfassung|Hörfassung|OmU|klare Sprache|Gebärdensprache|DGS)[^()]*\)/gi;
-
-export function stripBroadcastAnnotations(title: string): string {
-  return title.replace(BROADCAST_ANNOTATION, "").replace(/\s+/g, " ").trim();
-}
+// Re-exported for existing callers; the implementation lives in `@/lib/titles`
+// so that the movie matcher can share it without an import cycle.
+export { stripBroadcastAnnotations };
 
 // String similarity using Levenshtein distance
 function levenshteinDistance(a: string, b: string): number {
@@ -1106,14 +1098,28 @@ export async function fetchMovieSearchByQuery(
     return response;
   }
 
-  // Filter trailers and apply the configured minimum duration. Each URL variant
-  // is checked for HLS below so direct alternatives remain available.
+  // Filter trailers, serialised parts and apply the configured minimum
+  // duration. Each URL variant is checked for HLS below so direct alternatives
+  // remain available.
   const hlsEnabled = await isHlsEnabled();
-  const filteredResults = results.filter((item) => {
+  const prefiltered = results.filter((item) => {
     if (SKIP_KEYWORDS.some((kw) => item.title.includes(kw))) return false;
     if (minDuration > 0 && item.duration < minDuration) return false;
+    if (hasPartMarker(item.title) || hasPartMarker(item.topic)) return false;
     return true;
   });
+
+  // Every item emitted here carries the film's tmdbid/imdbid, so Radarr accepts
+  // it for that movie no matter what the release is called. Without a
+  // plausibility check any Mediathek hit for the search term -- a featurette, a
+  // talk show episode, a documentary about a band with a similar name -- would
+  // be grabbed as the film. When TMDB knows the film, run the results through
+  // the movie matcher (whole-word title relation plus runtime plausibility) and
+  // keep its ranking; without a TMDB hit, no IDs are attached and the coarse
+  // filter above is all we can do.
+  const filteredResults = tmdbMovie
+    ? (await matchMovieItems(prefiltered, tmdbMovie, minDuration)).map((match) => match.item)
+    : prefiltered;
 
   console.log(
     `[Mediathek] Results after movie filtering (min ${minDuration}s): ${filteredResults.length}`
