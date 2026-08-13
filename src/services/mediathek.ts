@@ -20,6 +20,7 @@ import {
   QualityPreference,
 } from "./newznab";
 import { matchMovieItems } from "./movie-matcher";
+import { dropGoneItems } from "@/lib/reachability";
 import { searchMovieByTitle } from "./tmdb";
 import type {
   ApiResultItem,
@@ -60,6 +61,15 @@ async function getQualityPreference(): Promise<QualityPreference> {
 
 // Keywords that are always skipped (trailers, outtakes, etc.)
 const SKIP_KEYWORDS = ["Trailer", "Outtakes:", "(klare Sprache)"];
+
+/**
+ * The variant a reachability probe should use: a Mediathek asset expires as a
+ * whole, so probing the highest quality on offer stands in for all of them --
+ * and that is the one Radarr grabs under a normal quality profile.
+ */
+function preferredUrl(item: ApiResultItem): string {
+  return item.url_video_hd || item.url_video || item.url_video_low;
+}
 
 function shouldSkipItem(
   item: ApiResultItem,
@@ -688,6 +698,24 @@ function titleRequiresSeriesName(ruleset: Ruleset, seriesName: string): boolean 
   }
 }
 
+/**
+ * Drop matched episodes whose video the broadcaster has taken down.
+ *
+ * Same reasoning as in the movie paths: the MediathekView index outlives the
+ * media, and Sonarr answers a failed download by blocklisting the release --
+ * which then blocks the entry even after it becomes valid again. One probe per
+ * matched episode is enough, because a Mediathek asset expires as a whole.
+ */
+async function dropGoneEpisodes(matched: MatchedEpisodeInfo[]): Promise<MatchedEpisodeInfo[]> {
+  const alive = await dropGoneItems(matched, (info) => preferredUrl(info.item));
+  if (alive.length < matched.length) {
+    console.log(
+      `[Mediathek] Dropped ${matched.length - alive.length} episode(s) whose video is gone`
+    );
+  }
+  return alive;
+}
+
 export async function fetchSearchResultsById(
   tvdbData: TvdbData,
   season: string | null,
@@ -806,7 +834,8 @@ export async function fetchSearchResultsById(
     seenUrls.add(item.url_video);
     return true;
   });
-  const newznabItems: NewznabItem[] = uniqueEpisodes.flatMap((info) =>
+  const reachableEpisodes = await dropGoneEpisodes(uniqueEpisodes);
+  const newznabItems: NewznabItem[] = reachableEpisodes.flatMap((info) =>
     generateRssItems(info, quality)
   );
   console.log(`[Mediathek] Generated ${newznabItems.length} Newznab items (quality: ${quality})`);
@@ -862,7 +891,8 @@ export async function fetchSearchResultsByString(
   }
 
   const { matchedEpisodes, unmatchedItems } = await applyRulesetFilters(results);
-  const newznabItems: NewznabItem[] = matchedEpisodes.flatMap((info) =>
+  const reachableEpisodes = await dropGoneEpisodes(matchedEpisodes);
+  const newznabItems: NewznabItem[] = reachableEpisodes.flatMap((info) =>
     generateRssItems(info, quality)
   );
 
@@ -871,9 +901,12 @@ export async function fetchSearchResultsByString(
   // every title that merely contains "S01" across unrelated shows. Gate on a
   // non-empty q to keep the previous (matched-only) behavior for those queries.
   const hasTextQuery = !!trimmedQ;
-  const genericItems: NewznabItem[] = hasTextQuery
-    ? unmatchedItems.flatMap((item) => generateGenericRssItems(item, quality))
-    : [];
+  // Generic items skip the ruleset match, but they are handed to Sonarr just
+  // the same -- so they need the same reachability guarantee as matched ones.
+  const reachableUnmatched = hasTextQuery ? await dropGoneItems(unmatchedItems, preferredUrl) : [];
+  const genericItems: NewznabItem[] = reachableUnmatched.flatMap((item) =>
+    generateGenericRssItems(item, quality)
+  );
 
   const allItems = [...newznabItems, ...genericItems];
   const response = convertItemsToRss(allItems, limit, offset);
@@ -1005,7 +1038,16 @@ export async function fetchMovieSearchResults(
   }
 
   // Match results against movie data
-  const matchResults = await matchMovieItems(filteredResults, movieData, minDuration);
+  const matched = await matchMovieItems(filteredResults, movieData, minDuration);
+
+  // The index outlives the media: drop entries whose video the broadcaster has
+  // already taken down, so they cannot turn into a failed download.
+  const matchResults = await dropGoneItems(matched, (match) => preferredUrl(match.item));
+  if (matchResults.length < matched.length) {
+    console.log(
+      `[Mediathek] Dropped ${matched.length - matchResults.length} entr(ies) whose video is gone`
+    );
+  }
 
   if (matchResults.length === 0) {
     console.log(`[Mediathek] No matches found for movie`);
@@ -1096,11 +1138,20 @@ export async function fetchMovieSearchByQuery(
   // Filter trailers and apply the configured minimum duration. Each URL variant
   // is checked for HLS below so direct alternatives remain available.
   const hlsEnabled = await isHlsEnabled();
-  const filteredResults = results.filter((item) => {
+  const candidates = results.filter((item) => {
     if (SKIP_KEYWORDS.some((kw) => item.title.includes(kw))) return false;
     if (minDuration > 0 && item.duration < minDuration) return false;
     return true;
   });
+
+  // Same as in the tmdbid path: an entry the broadcaster has taken down would
+  // only become a failed download and a blocklist entry.
+  const filteredResults = await dropGoneItems(candidates, preferredUrl);
+  if (filteredResults.length < candidates.length) {
+    console.log(
+      `[Mediathek] Dropped ${candidates.length - filteredResults.length} entr(ies) whose video is gone`
+    );
+  }
 
   console.log(
     `[Mediathek] Results after movie filtering (min ${minDuration}s): ${filteredResults.length}`

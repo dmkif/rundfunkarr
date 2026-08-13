@@ -60,9 +60,18 @@ function mockApi(results: ApiResultItem[]): void {
   } as Response);
 }
 
+/** Reachability probes (HEAD) go through the global fetch; default: alive. */
+function mockReachability(statusByUrl: Record<string, number> = {}): void {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string) => ({ status: statusByUrl[url] ?? 200 }) as Response)
+  );
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockedGetMinDuration.mockResolvedValue(300);
+  mockReachability();
 });
 
 describe("fetchSearchResultsByString – generic result gating", () => {
@@ -215,4 +224,47 @@ it("uses a direct low-quality variant for best when higher qualities are HLS", a
   } finally {
     vi.mocked(getSetting).mockResolvedValue(null);
   }
+});
+
+describe("entries whose video the broadcaster removed", () => {
+  // The MediathekView index outlives the media: entries stay listed after the
+  // file is gone, and each one becomes a failed download plus a blocklist entry.
+  const gone = {
+    url_video: "https://example.com/gone_720.mp4",
+    url_video_hd: "https://example.com/gone_1080.mp4",
+    url_video_low: "",
+  };
+
+  it("drops a removed film from a movie text search", async () => {
+    mockApi([makeItem({ topic: "Spielfilm", title: "Nevrland", duration: 5098, ...gone })]);
+    mockReachability({ "https://example.com/gone_1080.mp4": 404 });
+
+    const xml = await fetchMovieSearchByQuery("Nevrland 2019", 100, 0);
+
+    expect(xml).toContain('total="0"');
+  });
+
+  it("keeps a film when the probe itself fails", async () => {
+    // A timeout or a CDN that dislikes HEAD is not proof of absence.
+    mockApi([makeItem({ topic: "Spielfilm", title: "Nevrland", duration: 5098 })]);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new Error("timeout");
+      })
+    );
+
+    const xml = await fetchMovieSearchByQuery("Nevrland 2019", 100, 0);
+
+    expect(xml).toContain("<item>");
+  });
+
+  it("drops a removed episode from a series text search", async () => {
+    mockApi([makeItem({ topic: "The Gold", title: "Folge 1 (S01/E01)", ...gone })]);
+    mockReachability({ "https://example.com/gone_1080.mp4": 410 });
+
+    const xml = await fetchSearchResultsByString("The Gold", null, 100, 0);
+
+    expect(xml).not.toContain("<item>");
+  });
 });
