@@ -27,6 +27,7 @@ import {
   fetchMovieSearchByQuery,
   fetchMovieSearchResults,
   fetchSearchResultsByString,
+  titleMatchKey,
 } from "./mediathek";
 import { fetchWithRetry } from "@/lib/fetch-retry";
 import { mediathekCache } from "@/lib/cache";
@@ -215,4 +216,22 @@ it("uses a direct low-quality variant for best when higher qualities are HLS", a
   } finally {
     vi.mocked(getSetting).mockResolvedValue(null);
   }
+});
+
+describe("titleMatchKey", () => {
+  it("treats broadcaster and TVDB punctuation of multi-part titles alike", () => {
+    expect(titleMatchKey("Schlumpf in die Zukunft, Teil 1")).toBe(
+      titleMatchKey("Schlumpf in die Zukunft - Teil 1")
+    );
+  });
+
+  it("keeps the part number apart", () => {
+    expect(titleMatchKey("Schlumpf in die Zukunft, Teil 1")).not.toBe(
+      titleMatchKey("Schlumpf in die Zukunft - Teil 2")
+    );
+  });
+
+  it("ignores ellipsis style and case", () => {
+    expect(titleMatchKey("Wer einmal lügt ...")).toBe(titleMatchKey("Wer einmal Lügt…"));
+  });
 });
