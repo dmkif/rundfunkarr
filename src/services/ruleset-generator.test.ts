@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { generateRegexPatterns } from "./ruleset-generator";
+import { generateRegexPatterns, minDurationMinutes } from "./ruleset-generator";
 import type { ApiResultItem } from "@/types";
 
 function item(title: string): ApiResultItem {
@@ -82,5 +82,23 @@ describe("generateRegexPatterns - ItemTitleIncludes fallback", () => {
 
     const rules = JSON.parse(titleRegexRules);
     expect(rules[0].pattern).toContain(topic);
+  });
+});
+
+describe("minDurationMinutes", () => {
+  const withDurations = (...seconds: number[]) =>
+    seconds.map((duration) => ({ ...item("x"), duration }));
+
+  it("lets short children's series through but not their clips", () => {
+    // Shaun das Schaf: 7-minute episodes plus 1-minute clips
+    expect(minDurationMinutes(withDurations(423, 423, 423, 60, 423))).toBe(4);
+  });
+
+  it("keeps the former 15-minute floor for long formats", () => {
+    expect(minDurationMinutes(withDurations(5400, 5300, 5500))).toBe(15);
+  });
+
+  it("falls back to 15 without durations", () => {
+    expect(minDurationMinutes([])).toBe(15);
   });
 });

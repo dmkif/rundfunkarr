@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { queryContent } from "./content-search";
 import type { Ruleset, TvdbData, ApiResultItem } from "@/types";
+import { withoutYearSuffix } from "@/lib/show-names";
 
 // Common German show name patterns in MediathekView
 const SEASON_EPISODE_PATTERNS = [
@@ -37,6 +38,24 @@ async function searchMediathekApi(query: string): Promise<ApiResultItem[]> {
 }
 
 /**
+ * Minimum duration (minutes) for a generated ruleset, derived from the
+ * show's own entries: 60% of the median runtime, capped at the former fixed
+ * value of 15. A fixed 15 dropped every episode of short formats (children's
+ * series run 7-12 minutes), while 60% of the median still skips trailers and
+ * clips that sit under the same topic.
+ */
+export function minDurationMinutes(results: ApiResultItem[]): number {
+  const durations = results
+    .map((r) => r.duration)
+    .filter((d) => d > 0)
+    .sort((a, b) => a - b);
+  if (durations.length === 0) return 15;
+
+  const median = durations[Math.floor(durations.length / 2)];
+  return Math.max(1, Math.min(15, Math.floor((median / 60) * 0.6)));
+}
+
+/**
  * Find the best matching topic from MediathekView results
  */
 function findBestMatchingTopic(results: ApiResultItem[], showInfo: TvdbData): string | null {
@@ -46,11 +65,9 @@ function findBestMatchingTopic(results: ApiResultItem[], showInfo: TvdbData): st
   const topics = [...new Set(results.map((r) => r.topic))];
 
   // Try to match German name first, then English name
-  const searchNames = [
-    showInfo.germanName?.toLowerCase(),
-    showInfo.name.toLowerCase(),
-    ...showInfo.aliases.map((a) => a.name.toLowerCase()),
-  ].filter(Boolean) as string[];
+  const searchNames = [showInfo.germanName, showInfo.name, ...showInfo.aliases.map((a) => a.name)]
+    .filter(Boolean)
+    .flatMap((name) => [name!.toLowerCase(), withoutYearSuffix(name!).toLowerCase()]);
 
   // Exact match
   for (const topic of topics) {
@@ -462,7 +479,7 @@ export async function generateRulesetForShow(
   }
 
   // Search MediathekView for the show
-  const searchQuery = showInfo.germanName || showInfo.name;
+  const searchQuery = withoutYearSuffix(showInfo.germanName || showInfo.name);
   console.log(`[RulesetGenerator] Searching MediathekView for: "${searchQuery}"`);
 
   const results = await searchMediathekApi(searchQuery);
@@ -472,7 +489,7 @@ export async function generateRulesetForShow(
     // Try English name if German search failed
     if (showInfo.germanName && showInfo.name !== showInfo.germanName) {
       console.log(`[RulesetGenerator] Trying English name: "${showInfo.name}"`);
-      const englishResults = await searchMediathekApi(showInfo.name);
+      const englishResults = await searchMediathekApi(withoutYearSuffix(showInfo.name));
       if (englishResults.length > 0) {
         return generateRulesetFromResults(tvdbId, showInfo, englishResults);
       }
@@ -528,7 +545,13 @@ async function generateRulesetFromResults(
       showName: showInfo.name,
       germanName: showInfo.germanName,
       matchingStrategy: strategy,
-      filters: '[{"attribute":"duration","type":"GreaterThan","value":"15"}]',
+      filters: JSON.stringify([
+        {
+          attribute: "duration",
+          type: "GreaterThan",
+          value: String(minDurationMinutes(topicResults)),
+        },
+      ]),
       episodeRegex: patterns.episodeRegex,
       seasonRegex: patterns.seasonRegex,
       titleRegexRules: patterns.titleRegexRules,

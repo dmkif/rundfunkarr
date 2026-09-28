@@ -21,6 +21,7 @@ import {
 } from "./newznab";
 import { matchMovieItems } from "./movie-matcher";
 import { searchMovieByTitle } from "./tmdb";
+import { withoutYearSuffix } from "@/lib/show-names";
 import type {
   ApiResultItem,
   TvdbData,
@@ -355,7 +356,7 @@ async function matchesSeasonAndEpisode(
   return {
     episode: matchedEpisode,
     item,
-    showName: tvdbData.name || tvdbData.germanName || "",
+    showName: tvdbData.germanName || tvdbData.name || "",
     matchedTitle: `S${season}E${episode}`,
     tvdbId: ruleset.media.media_tvdbId,
   };
@@ -396,7 +397,7 @@ async function matchesItemTitleIncludes(
   return {
     episode: matchedEpisode,
     item,
-    showName: tvdbData.name || tvdbData.germanName || "",
+    showName: tvdbData.germanName || tvdbData.name || "",
     matchedTitle: constructedTitle,
     tvdbId: ruleset.media.media_tvdbId,
   };
@@ -453,7 +454,7 @@ async function matchesItemTitleExact(
   return {
     episode: matchedEpisode,
     item,
-    showName: tvdbData.name || tvdbData.germanName || "",
+    showName: tvdbData.germanName || tvdbData.name || "",
     matchedTitle: constructedTitle,
     tvdbId: ruleset.media.media_tvdbId,
   };
@@ -478,7 +479,7 @@ async function matchesItemTitleEqualsAirdate(
   return {
     episode: matchedEpisode,
     item,
-    showName: tvdbData.name || tvdbData.germanName || "",
+    showName: tvdbData.germanName || tvdbData.name || "",
     matchedTitle: constructedTitle,
     tvdbId: ruleset.media.media_tvdbId,
   };
@@ -712,7 +713,7 @@ export async function fetchSearchResultsById(
   const quality = await getQualityPreference();
   const minDuration = await getMinDurationSeconds();
   const matchingSettings = await getMatchingSettings();
-  const searchQuery = tvdbData.germanName || tvdbData.name;
+  const searchQuery = withoutYearSuffix(tvdbData.germanName || tvdbData.name);
   await ensureRulesetsLoaded();
   const rulesetSnapshot = new Map(
     getAllTopics()
