@@ -11,6 +11,7 @@ import {
 let rulesetsByTopic: Map<string, Ruleset[]> = new Map();
 let generatedRulesetsByTopic: Map<string, Ruleset[]> = new Map();
 let lastFetchTime: number = 0;
+let initialized = false;
 const REFRESH_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 
 // GitHub raw URLs for auto-update
@@ -23,6 +24,7 @@ async function fetchFromGitHub(): Promise<Ruleset[] | null> {
     console.log(`[Rulesets] Fetching from GitHub: ${GITHUB_RULESETS_URL}`);
     const response = await fetch(GITHUB_RULESETS_URL, {
       headers: { "User-Agent": "RundfunkArr" },
+      signal: AbortSignal.timeout(10000),
     });
 
     if (!response.ok) {
@@ -87,6 +89,7 @@ export async function loadRulesets(): Promise<void> {
     await loadGeneratedRulesets();
 
     lastFetchTime = Date.now();
+    initialized = true;
   } catch (error) {
     console.error("[Rulesets] Error loading rulesets:", error);
   }
@@ -113,11 +116,18 @@ async function loadGeneratedRulesets(): Promise<void> {
   }
 }
 
+let refreshPromise: Promise<void> | null = null;
+
 export async function refreshRulesetsIfNeeded(): Promise<void> {
   const now = Date.now();
   if (now - lastFetchTime > REFRESH_INTERVAL_MS) {
     console.log("[Rulesets] Refreshing rulesets (hourly update)");
-    await loadRulesets();
+    if (!refreshPromise) {
+      refreshPromise = loadRulesets().finally(() => {
+        refreshPromise = null;
+      });
+    }
+    await refreshPromise;
   }
 }
 
@@ -210,21 +220,27 @@ export async function getOrGenerateRulesetForShow(
 }
 
 export function isRulesetsLoaded(): boolean {
-  return rulesetsByTopic.size > 0;
+  return initialized;
 }
 
 // Initialize rulesets on first import
 let initPromise: Promise<void> | null = null;
 
 export async function ensureRulesetsLoaded(): Promise<void> {
+  if (initPromise) {
+    await initPromise;
+    return;
+  }
   if (isRulesetsLoaded()) {
-    // Check for hourly refresh in background
-    refreshRulesetsIfNeeded().catch(console.error);
+    // Discovery must see the completed refresh before selecting topics.
+    await refreshRulesetsIfNeeded();
     return;
   }
 
   if (!initPromise) {
-    initPromise = loadRulesets();
+    initPromise = loadRulesets().finally(() => {
+      initPromise = null;
+    });
   }
 
   await initPromise;
