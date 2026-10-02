@@ -21,6 +21,7 @@ import {
 } from "./newznab";
 import { matchMovieItems } from "./movie-matcher";
 import { searchMovieByTitle } from "./tmdb";
+import { withoutYearSuffix } from "@/lib/show-names";
 import type {
   ApiResultItem,
   TvdbData,
@@ -201,6 +202,22 @@ function formatTitle(title: string): string {
   return formatted;
 }
 
+/**
+ * Comparison key for episode titles. Broadcasters and TVDB punctuate the same
+ * title differently (", Teil 1" vs " - Teil 1", "Wer einmal lügt ..." vs
+ * "Wer einmal lügt…"), and formatTitle keeps "-" and runs of dots. Without
+ * this, "Schlumpf in die Zukunft, Teil 1" only fuzzy-matched TVDB's
+ * "Schlumpf in die Zukunft - Teil 1", and part 2 scored within the "exact"
+ * threshold too, so the newer part won. formatTitle stays as it is because it
+ * also builds release names.
+ */
+export function titleMatchKey(title: string): string {
+  return formatTitle(title)
+    .toLowerCase()
+    .replace(/[-.\u2026]+/g, ".")
+    .replace(/^\.+|\.+$/g, "");
+}
+
 // String similarity using Levenshtein distance
 function levenshteinDistance(a: string, b: string): number {
   const matrix: number[][] = [];
@@ -339,7 +356,7 @@ async function matchesSeasonAndEpisode(
   return {
     episode: matchedEpisode,
     item,
-    showName: tvdbData.name || tvdbData.germanName || "",
+    showName: tvdbData.germanName || tvdbData.name || "",
     matchedTitle: `S${season}E${episode}`,
     tvdbId: ruleset.media.media_tvdbId,
   };
@@ -356,18 +373,18 @@ async function matchesItemTitleIncludes(
   const constructedTitle = buildTitleFromRegexRules(item, ruleset.titleRegexRules);
   if (!constructedTitle) return null;
 
-  const formattedConstructed = formatTitle(constructedTitle).toLowerCase();
+  const formattedConstructed = titleMatchKey(constructedTitle);
 
   // First try exact contains match
   let matchedEpisode = tvdbData.episodes.find((ep) =>
-    formatTitle(ep.name).toLowerCase().includes(formattedConstructed)
+    titleMatchKey(ep.name).includes(formattedConstructed)
   );
 
   // If no exact match, try fuzzy matching with threshold
   if (!matchedEpisode && threshold < 1.0) {
     let bestSimilarity = 0;
     for (const ep of tvdbData.episodes) {
-      const similarity = stringSimilarity(formatTitle(ep.name), formattedConstructed);
+      const similarity = stringSimilarity(titleMatchKey(ep.name), formattedConstructed);
       if (similarity >= threshold && similarity > bestSimilarity) {
         bestSimilarity = similarity;
         matchedEpisode = ep;
@@ -380,7 +397,7 @@ async function matchesItemTitleIncludes(
   return {
     episode: matchedEpisode,
     item,
-    showName: tvdbData.name || tvdbData.germanName || "",
+    showName: tvdbData.germanName || tvdbData.name || "",
     matchedTitle: constructedTitle,
     tvdbId: ruleset.media.media_tvdbId,
   };
@@ -397,18 +414,16 @@ async function matchesItemTitleExact(
   const constructedTitle = buildTitleFromRegexRules(item, ruleset.titleRegexRules);
   if (!constructedTitle) return null;
 
-  const formattedTitle = formatTitle(constructedTitle).toLowerCase();
+  const formattedTitle = titleMatchKey(constructedTitle);
 
   // First try exact match
-  let matchedEpisodes = tvdbData.episodes.filter(
-    (ep) => formatTitle(ep.name).toLowerCase() === formattedTitle
-  );
+  let matchedEpisodes = tvdbData.episodes.filter((ep) => titleMatchKey(ep.name) === formattedTitle);
 
   // If no exact match and threshold allows, try very high similarity matching
   if (matchedEpisodes.length === 0 && threshold < 1.0) {
     const highThreshold = Math.max(threshold, 0.9); // At least 90% for "exact" matching
     matchedEpisodes = tvdbData.episodes.filter((ep) => {
-      const similarity = stringSimilarity(formatTitle(ep.name).toLowerCase(), formattedTitle);
+      const similarity = stringSimilarity(titleMatchKey(ep.name), formattedTitle);
       return similarity >= highThreshold;
     });
   }
@@ -439,7 +454,7 @@ async function matchesItemTitleExact(
   return {
     episode: matchedEpisode,
     item,
-    showName: tvdbData.name || tvdbData.germanName || "",
+    showName: tvdbData.germanName || tvdbData.name || "",
     matchedTitle: constructedTitle,
     tvdbId: ruleset.media.media_tvdbId,
   };
@@ -464,7 +479,7 @@ async function matchesItemTitleEqualsAirdate(
   return {
     episode: matchedEpisode,
     item,
-    showName: tvdbData.name || tvdbData.germanName || "",
+    showName: tvdbData.germanName || tvdbData.name || "",
     matchedTitle: constructedTitle,
     tvdbId: ruleset.media.media_tvdbId,
   };
@@ -698,7 +713,7 @@ export async function fetchSearchResultsById(
   const quality = await getQualityPreference();
   const minDuration = await getMinDurationSeconds();
   const matchingSettings = await getMatchingSettings();
-  const searchQuery = tvdbData.germanName || tvdbData.name;
+  const searchQuery = withoutYearSuffix(tvdbData.germanName || tvdbData.name);
   await ensureRulesetsLoaded();
   const rulesetSnapshot = new Map(
     getAllTopics()

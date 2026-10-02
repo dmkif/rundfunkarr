@@ -116,6 +116,7 @@ export async function getShowInfoByTvdbId(tvdbId: number): Promise<TvdbData | nu
   }
 
   // Check database cache
+  await ensureTvdbCacheVersion();
   const dbSeries = await prisma.tvdbSeries.findUnique({
     where: { id: tvdbId },
     include: { episodes: true },
@@ -144,6 +145,113 @@ export async function getShowInfoByTvdbId(tvdbId: number): Promise<TvdbData | nu
   return fetchAndCacheSeriesData(tvdbId);
 }
 
+// Bump when the cached series/episode data changes meaning, so rows written
+// by an older version are refetched instead of served until they expire.
+// 2: episode names and the German series name are German translations.
+const TVDB_CACHE_VERSION = "2";
+let tvdbCacheVersionChecked = false;
+
+async function ensureTvdbCacheVersion(): Promise<void> {
+  if (tvdbCacheVersionChecked) return;
+
+  const stored = await prisma.config.findUnique({ where: { key: "tvdb_cache_version" } });
+  if (stored?.value !== TVDB_CACHE_VERSION) {
+    console.log(`[TVDB] Cache version changed, dropping cached series data`);
+    await prisma.$transaction([
+      prisma.tvdbEpisode.deleteMany({}),
+      prisma.tvdbSeries.deleteMany({}),
+      prisma.config.upsert({
+        where: { key: "tvdb_cache_version" },
+        update: { value: TVDB_CACHE_VERSION },
+        create: { key: "tvdb_cache_version", value: TVDB_CACHE_VERSION },
+      }),
+    ]);
+  }
+  tvdbCacheVersionChecked = true;
+}
+
+async function fetchTvdbJson(
+  path: string,
+  token: string
+): Promise<{ data?: unknown; links?: { next?: string | null } } | null> {
+  const response = await fetchWithRetry(`${TVDB_API_URL}${path}`, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/json",
+    },
+  });
+  if (!response.ok) return null;
+  const data = await response.json();
+  return data?.status === "success" ? data : null;
+}
+
+/**
+ * German series translation. The extended series record only lists which
+ * languages exist (nameTranslations is an array of language codes), so the
+ * name has to come from the translations endpoint.
+ */
+async function fetchGermanSeriesTranslation(
+  tvdbId: number,
+  token: string
+): Promise<{ name: string | null; aliases: string[] }> {
+  try {
+    const data = await fetchTvdbJson(`/series/${tvdbId}/translations/deu`, token);
+    const translation = data?.data as
+      | { name?: string | null; aliases?: string[] | null }
+      | undefined;
+    return { name: translation?.name || null, aliases: translation?.aliases || [] };
+  } catch (error) {
+    console.warn(`[TVDB] No German series translation for ${tvdbId}:`, error);
+    return { name: null, aliases: [] };
+  }
+}
+
+/**
+ * German episode names keyed by "season:episode". The extended series record
+ * names episodes in the series' original language, which never matches a
+ * German Mediathek title for foreign shows (French, English, Swedish, ...).
+ */
+async function fetchGermanEpisodeNames(
+  tvdbId: number,
+  token: string
+): Promise<Map<string, string>> {
+  const names = new Map<string, string>();
+  try {
+    for (let page = 0; ; page++) {
+      const data = await fetchTvdbJson(
+        `/series/${tvdbId}/episodes/default/deu?page=${page}`,
+        token
+      );
+      const episodes = (data?.data as { episodes?: unknown[] } | undefined)?.episodes;
+      if (!episodes) break;
+
+      for (const ep of episodes as {
+        name?: string | null;
+        seasonNumber: number;
+        number: number;
+      }[]) {
+        if (ep.name) names.set(episodeKey(ep.seasonNumber, ep.number), ep.name);
+      }
+      if (!data?.links?.next) break;
+    }
+  } catch (error) {
+    console.warn(`[TVDB] Could not fetch German episode names for ${tvdbId}:`, error);
+  }
+  return names;
+}
+
+function episodeKey(seasonNumber: number, episodeNumber: number): string {
+  return `${seasonNumber}:${episodeNumber}`;
+}
+
+/** Prefer the German episode name; keep the original name where none exists. */
+export function germanEpisodeName(
+  germanNames: Map<string, string>,
+  ep: { name?: string | null; seasonNumber: number; number: number }
+): string {
+  return germanNames.get(episodeKey(ep.seasonNumber, ep.number)) || ep.name || "";
+}
+
 async function fetchAndCacheSeriesData(tvdbId: number): Promise<TvdbData | null> {
   const token = await getToken();
   if (!token) {
@@ -170,8 +278,12 @@ async function fetchAndCacheSeriesData(tvdbId: number): Promise<TvdbData | null>
 
     const series = data.data;
 
-    // Extract German name from translations
-    const germanName = series.nameTranslations?.deu || series.name;
+    const [germanTranslation, germanEpisodeNames] = await Promise.all([
+      fetchGermanSeriesTranslation(tvdbId, token),
+      fetchGermanEpisodeNames(tvdbId, token),
+    ]);
+
+    const germanName = germanTranslation.name || series.name;
 
     // Extract German aliases
     const rawAliases = series.aliases || [];
@@ -181,6 +293,11 @@ async function fetchAndCacheSeriesData(tvdbId: number): Promise<TvdbData | null>
         language: alias.language,
         name: alias.name,
       }));
+    for (const name of germanTranslation.aliases) {
+      if (!germanAliases.some((alias) => alias.name === name)) {
+        germanAliases.push({ language: "deu", name });
+      }
+    }
 
     // Calculate cache expiry based on activity
     const now = new Date();
@@ -211,7 +328,7 @@ async function fetchAndCacheSeriesData(tvdbId: number): Promise<TvdbData | null>
         seasonNumber: number;
         number: number;
       }) => ({
-        name: ep.name || "",
+        name: germanEpisodeName(germanEpisodeNames, ep),
         aired: ep.aired ? new Date(ep.aired) : null,
         runtime: ep.runtime || null,
         seasonNumber: ep.seasonNumber,
@@ -250,7 +367,7 @@ async function fetchAndCacheSeriesData(tvdbId: number): Promise<TvdbData | null>
         }) => ({
           id: ep.id,
           seriesId: tvdbId,
-          name: ep.name || "",
+          name: germanEpisodeName(germanEpisodeNames, ep),
           aired: ep.aired ? new Date(ep.aired) : null,
           runtime: ep.runtime || null,
           seasonNumber: ep.seasonNumber,
