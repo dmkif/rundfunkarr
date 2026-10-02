@@ -22,6 +22,7 @@ import {
 import { matchMovieItems } from "./movie-matcher";
 import { hasPartMarker, stripBroadcastAnnotations } from "@/lib/titles";
 import { dropGoneItems } from "@/lib/reachability";
+import { isAccessibilityVersion } from "@/lib/accessibility";
 import { searchMovieByTitle } from "./tmdb";
 import { withoutYearSuffix } from "@/lib/show-names";
 import type {
@@ -62,7 +63,7 @@ async function getQualityPreference(): Promise<QualityPreference> {
 }
 
 // Keywords that are always skipped (trailers, outtakes, etc.)
-const SKIP_KEYWORDS = ["Trailer", "Outtakes:", "(klare Sprache)"];
+const SKIP_KEYWORDS = ["Trailer", "Outtakes:"];
 
 /**
  * The variant a reachability probe should use: a Mediathek asset expires as a
@@ -81,6 +82,7 @@ function shouldSkipItem(
   // Skip m3u8 streams unless HLS is enabled, items with skip keywords, and items shorter than minDuration
   if (!hlsEnabled && isStreamingUrl(item.url_video)) return true;
   if (SKIP_KEYWORDS.some((kw) => item.title.includes(kw))) return true;
+  if (isAccessibilityVersion(item.title) || isAccessibilityVersion(item.topic)) return true;
   if (minDuration > 0 && item.duration < minDuration) return true;
   return false;
 }
@@ -1046,7 +1048,10 @@ export async function fetchMovieSearchResults(
 
   // Filter out trailers and other non-movie content
   const filteredResults = allResults.filter(
-    (item) => !SKIP_KEYWORDS.some((kw) => item.title.includes(kw))
+    (item) =>
+      !SKIP_KEYWORDS.some((kw) => item.title.includes(kw)) &&
+      !isAccessibilityVersion(item.title) &&
+      !isAccessibilityVersion(item.topic)
   );
   console.log(`[Mediathek] Results after filtering: ${filteredResults.length}`);
 
@@ -1161,6 +1166,7 @@ export async function fetchMovieSearchByQuery(
   const hlsEnabled = await isHlsEnabled();
   const prefiltered = results.filter((item) => {
     if (SKIP_KEYWORDS.some((kw) => item.title.includes(kw))) return false;
+    if (isAccessibilityVersion(item.title) || isAccessibilityVersion(item.topic)) return false;
     if (minDuration > 0 && item.duration < minDuration) return false;
     if (hasPartMarker(item.title) || hasPartMarker(item.topic)) return false;
     return true;
