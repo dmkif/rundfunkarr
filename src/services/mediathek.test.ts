@@ -216,3 +216,82 @@ it("uses a direct low-quality variant for best when higher qualities are HLS", a
     vi.mocked(getSetting).mockResolvedValue(null);
   }
 });
+
+describe("accessibility versions are never offered as the regular release", () => {
+  it("drops an audio-described episode from a text search", async () => {
+    // The case that started this: for "Die Augenzeugen" the broadcaster kept
+    // only the audio-described versions online. Offering them as the regular
+    // episode puts a spoken picture description into the library.
+    mockApi([
+      makeItem({ topic: "Die Augenzeugen", title: "Folge 2: Lügen (S01/E02) (Audiodeskription)" }),
+    ]);
+
+    const xml = await fetchSearchResultsByString("Die Augenzeugen", null, 100, 0);
+
+    expect(xml).toContain('total="0"');
+    expect(xml).not.toContain("<item>");
+  });
+
+  it("keeps the regular episode next to the audio-described one", async () => {
+    mockApi([
+      makeItem({ topic: "Die Augenzeugen", title: "Folge 1: Schweigen (S01/E01)" }),
+      // The AD version is its own file. Distinct URLs also matter because
+      // search results are deduplicated by url_video.
+      makeItem({
+        topic: "Die Augenzeugen",
+        title: "Folge 1: Schweigen (S01/E01) (Audiodeskription)",
+        url_video: "https://example.com/show_ad_720.mp4",
+        url_video_low: "https://example.com/show_ad_480.mp4",
+        url_video_hd: "https://example.com/show_ad_1080.mp4",
+      }),
+    ]);
+
+    const xml = await fetchSearchResultsByString("Die Augenzeugen", null, 100, 0);
+
+    expect(xml).toContain("Schweigen");
+    expect(xml).not.toContain("Audiodeskription");
+    expect((xml.match(/<item>/g) || []).length).toBeGreaterThan(0);
+  });
+
+  it("drops a sign-language film from a movie search", async () => {
+    mockApi([
+      makeItem({ topic: "Kino - Filme", title: "Der Film (Gebärdensprache)", duration: 5400 }),
+    ]);
+
+    const xml = await fetchMovieSearchByQuery("Der Film", 100, 0);
+
+    expect(xml).toContain('total="0"');
+  });
+
+  it("still offers a language variant -- OmU is a legitimate audio track", async () => {
+    mockApi([
+      makeItem({
+        topic: "Die Augenzeugen",
+        title: "Folge 3: Kontrollverlust (S01/E03) (Originalversion mit Untertitel)",
+      }),
+    ]);
+
+    const xml = await fetchSearchResultsByString("Die Augenzeugen", null, 100, 0);
+
+    expect(xml).toContain("<item>");
+  });
+
+  it("drops an audio-described film from a movie search by TMDB ID", async () => {
+    // Radarr searches by tmdbid first, so this path needs the filter as well.
+    const movie: TmdbMovieData = {
+      tmdbId: 1,
+      imdbId: null,
+      title: "Der Film",
+      germanTitle: "Der Film",
+      runtime: 90,
+      releaseDate: "2020-01-01",
+    };
+    mockApi([
+      makeItem({ topic: "Spielfilm", title: "Der Film (Audiodeskription)", duration: 5400 }),
+    ]);
+
+    const xml = await fetchMovieSearchResults(movie, 100, 0);
+
+    expect(xml).not.toContain("<item>");
+  });
+});
