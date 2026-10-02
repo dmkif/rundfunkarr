@@ -9,5 +9,10 @@ export async function register() {
     const { initCacheTTL } = await import("@/lib/cache");
     await initCacheTTL();
     console.log("Cache TTL initialized from database");
+    // A failed recovery must not keep the server from starting.
+    const { resumeInterruptedDownloads } = await import("@/server/download-manager");
+    await resumeInterruptedDownloads().catch((error) =>
+      console.error("Failed to resume interrupted downloads:", error)
+    );
   }
 }
