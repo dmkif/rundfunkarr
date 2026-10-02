@@ -4,8 +4,12 @@ import type { ApiResultItem, TmdbMovieData } from "@/types";
 vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue(null),
 }));
+vi.mock("./tmdb", () => ({ searchMovieCandidates: vi.fn().mockResolvedValue([]) }));
 
 import { matchMovieItems } from "./movie-matcher";
+import { searchMovieCandidates } from "./tmdb";
+
+const mockedCandidates = vi.mocked(searchMovieCandidates);
 
 const movie: TmdbMovieData = {
   tmdbId: 28,
@@ -277,5 +281,99 @@ describe("matchMovieItems – original title", () => {
     const matches = await matchMovieItems([film], starWars, 300);
 
     expect(matches).toHaveLength(1);
+  });
+});
+
+describe("matchMovieItems – entries that are a different film", () => {
+  const saltkrokan: TmdbMovieData = {
+    ...movie,
+    tmdbId: 355659,
+    title: "Vi på Saltkråkan",
+    germanTitle: "Ferien auf Saltkrokan",
+    runtime: 90,
+  };
+  const sequel = makeItem(88 * 60, "sequel", {
+    topic: "Filme",
+    title: "Ferien auf Saltkrokan: Das Trollkind",
+  });
+
+  it("rejects a sequel that TMDB knows under the Mediathek title", async () => {
+    mockedCandidates.mockResolvedValueOnce([
+      {
+        id: 433396,
+        title: "Ferien auf Saltkrokan - Das Trollkind",
+        originalTitle: "Tjorven och Skrållan",
+      },
+      { id: 355659, title: "Ferien auf Saltkrokan", originalTitle: "Vi på Saltkråkan" },
+    ]);
+
+    const matches = await matchMovieItems([sequel], saltkrokan, 300);
+
+    expect(matches).toHaveLength(0);
+  });
+
+  it("keeps the entry when TMDB finds our film first", async () => {
+    // "Dampfnudelblues. Ein Eberhoferkrimi" is only a partial title match,
+    // but TMDB's search for it finds the film itself.
+    const dampfnudel: TmdbMovieData = {
+      ...movie,
+      tmdbId: 209232,
+      title: "Dampfnudelblues",
+      germanTitle: "Dampfnudelblues",
+      runtime: 87,
+    };
+    mockedCandidates.mockResolvedValueOnce([
+      { id: 209232, title: "Dampfnudelblues", originalTitle: "Dampfnudelblues" },
+    ]);
+    const item = makeItem(87 * 60, "film", {
+      topic: "Filme in der ARD",
+      title: "Dampfnudelblues. Ein Eberhoferkrimi",
+    });
+
+    const matches = await matchMovieItems([item], dampfnudel, 300);
+
+    expect(matches).toHaveLength(1);
+  });
+
+  it("keeps the entry when TMDB cannot answer", async () => {
+    mockedCandidates.mockResolvedValueOnce(null);
+
+    const matches = await matchMovieItems([sequel], saltkrokan, 300);
+
+    expect(matches).toHaveLength(1);
+  });
+
+  it("does not ask TMDB for an exact title match", async () => {
+    mockedCandidates.mockClear();
+    const exact = makeItem(90 * 60, "exact", { topic: "Filme", title: "Ferien auf Saltkrokan" });
+
+    await matchMovieItems([exact], saltkrokan, 300);
+
+    expect(mockedCandidates).not.toHaveBeenCalled();
+  });
+
+  it("checks an exact match that only came from the topic", async () => {
+    const wickie2009: TmdbMovieData = {
+      ...movie,
+      tmdbId: 22355,
+      title: "Wickie und die starken Männer",
+      germanTitle: "Wickie und die starken Männer",
+      runtime: 85,
+    };
+    mockedCandidates.mockResolvedValueOnce([
+      {
+        id: 648572,
+        title: "Wickie und die starken Männer – Das magische Schwert",
+        originalTitle: "Vic the Viking and the Magic Sword",
+      },
+    ]);
+    const sword = makeItem(71 * 60, "sword", {
+      topic: "Wickie und die starken Männer",
+      title: "Wickie und die starken Männer - Das magische Schwert",
+    });
+
+    const matches = await matchMovieItems([sword], wickie2009, 300);
+
+    expect(matches).toHaveLength(0);
   });
 });

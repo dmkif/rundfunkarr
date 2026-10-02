@@ -2,6 +2,7 @@ import { isStreamingUrl } from "@/lib/stream-url";
 import type { ApiResultItem, TmdbMovieData } from "@/types";
 import { getSetting } from "@/lib/settings";
 import { hasPartMarker, stripBroadcastAnnotations } from "@/lib/titles";
+import { searchMovieCandidates } from "./tmdb";
 
 async function isHlsEnabled(): Promise<boolean> {
   const setting = await getSetting("download.enableHLS");
@@ -157,6 +158,44 @@ function stringSimilarity(a: string, b: string): number {
   return 1 - distance / maxLength;
 }
 
+/**
+ * Is this Mediathek title the exact title of a *different* film?
+ *
+ * A non-exact title match only says the two titles are related. Sequels,
+ * remakes and films with similar names are related too: "Ferien auf
+ * Saltkrokan: Das Trollkind" (TMDB 433396) passed as "Ferien auf Saltkrokan"
+ * (1968), "Jakob der Lügner" as "Der Lügner", and Capra's "Ist das Leben nicht
+ * schön?" as Benigni's "Das Leben ist schön" -- all with a plausible runtime.
+ * TMDB knows those other films, so ask it: when the search for the Mediathek
+ * title finds another film under that title before it finds ours, the entry
+ * is that other film.
+ *
+ * When TMDB cannot answer, the entry keeps the benefit of the doubt.
+ */
+async function isAnotherFilm(itemTitle: string, movieData: TmdbMovieData): Promise<boolean> {
+  const query = stripBroadcastAnnotations(itemTitle)
+    .replace(/\s*\((?:S\d+\s*\/\s*)?E\d+\)/gi, "")
+    .replace(/[«»„“”"]/g, "")
+    .trim();
+  const candidates = await searchMovieCandidates(query);
+  if (!candidates) return false;
+
+  const normalizedQuery = normalizeTitle(query);
+  for (const candidate of candidates) {
+    if (candidate.id === movieData.tmdbId) return false;
+    const sameName = [candidate.title, candidate.originalTitle].some(
+      (name) => !!name && stringSimilarity(normalizeTitle(name), normalizedQuery) >= 0.9
+    );
+    if (sameName) {
+      console.log(
+        `[MovieMatcher] Skipping "${itemTitle}": it is "${candidate.title}" (TMDB ${candidate.id}), not TMDB ${movieData.tmdbId}`
+      );
+      return true;
+    }
+  }
+  return false;
+}
+
 export interface MovieMatchResult {
   item: ApiResultItem;
   score: number; // 0-100, higher is better
@@ -291,6 +330,20 @@ export async function matchMovieItems(
     }
 
     if (!titleMatch) continue;
+
+    // A related but not identical title may name a different film. That
+    // includes an "exact" match that only came from the topic: KiKA files
+    // "Wickie und die starken Männer - Das magische Schwert" (2019) under the
+    // topic "Wickie und die starken Männer", which is also the German title of
+    // the 2009 film.
+    const titleItselfMatches = [normalizedGermanTitle, normalizedOriginalTitle].some(
+      (name) => !!name && stringSimilarity(normalizedTitle, name) >= 0.9
+    );
+    if (
+      (titleMatch !== "exact" || !titleItselfMatches) &&
+      (await isAnotherFilm(item.title, movieData))
+    )
+      continue;
 
     // Calculate duration score (0-20 points)
     let durationScore = 0;

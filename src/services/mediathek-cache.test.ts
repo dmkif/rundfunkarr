@@ -21,7 +21,10 @@ vi.mock("./rulesets", () => ({
   getRulesetsForTopic: () => [],
   getOrGenerateRulesetForShow: vi.fn(async () => null),
 }));
-vi.mock("./tmdb", () => ({ searchMovieByTitle: vi.fn(async () => null) }));
+vi.mock("./tmdb", () => ({
+  searchMovieByTitle: vi.fn(async () => null),
+  searchMovieCandidates: vi.fn(async () => []),
+}));
 
 const show: TvdbData = { id: 101241, name: "Show", germanName: null, aliases: [], episodes: [] };
 const movie: TmdbMovieData = {
