@@ -1,6 +1,8 @@
 import { isStreamingUrl } from "@/lib/stream-url";
 import type { ApiResultItem, TmdbMovieData } from "@/types";
 import { getSetting } from "@/lib/settings";
+import { hasPartMarker, stripBroadcastAnnotations } from "@/lib/titles";
+import { searchMovieCandidates } from "./tmdb";
 
 async function isHlsEnabled(): Promise<boolean> {
   const setting = await getSetting("download.enableHLS");
@@ -9,6 +11,41 @@ async function isHlsEnabled(): Promise<boolean> {
 
 // Default duration tolerance in minutes
 const DEFAULT_DURATION_TOLERANCE = 10;
+
+// A film's Mediathek entry may deviate from TMDB's runtime -- TV cuts, PAL
+// speed-up, differing credit lengths -- but only within a band. Everything far
+// outside it is a different piece of content that merely carries the film's
+// name: a featurette, an interview, a making-of, or one part of a serialised
+// broadcast. The duration used to be a scoring input only, which let a 6-minute
+// festival clip named "Nevrland" win against the 89-minute film.
+const MIN_RUNTIME_RATIO = 0.6;
+const MAX_RUNTIME_RATIO = 1.4;
+
+// Without a TMDB runtime there is no band to check against, but a film is
+// still not a five-minute clip. "Der süße Brei" (TMDB 537518, no runtime)
+// matched a 5 min "Die Maus" retelling alongside the 85 min ZDF film. The
+// floor sits below short TV fairy-tale films (about 55-60 min), and the
+// global minimum-duration setting cannot do this job because series share it.
+const MIN_UNKNOWN_RUNTIME_MINUTES = 40;
+
+/**
+ * Is this item's length plausible for the film? Unknown runtimes (TMDB has no
+ * value) only have to clear MIN_UNKNOWN_RUNTIME_MINUTES.
+ */
+export function isRuntimePlausible(
+  itemDurationSeconds: number,
+  movieRuntimeMinutes: number
+): boolean {
+  const itemMinutes = itemDurationSeconds / 60;
+  if (!movieRuntimeMinutes || movieRuntimeMinutes <= 0) {
+    return itemMinutes >= MIN_UNKNOWN_RUNTIME_MINUTES;
+  }
+
+  return (
+    itemMinutes >= movieRuntimeMinutes * MIN_RUNTIME_RATIO &&
+    itemMinutes <= movieRuntimeMinutes * MAX_RUNTIME_RATIO
+  );
+}
 
 /**
  * Get the duration tolerance setting
@@ -31,12 +68,18 @@ async function getDurationTolerance(): Promise<number> {
  * - Normalize spaces
  */
 function normalizeTitle(title: string): string {
-  return title
-    .toLowerCase()
-    .replace(/[/:;,"'@#?$%^*+=!|<>()&""'']/g, "")
-    .replace(/[-–—]/g, " ") // Normalize different dash types
-    .replace(/\s+/g, " ")
-    .trim();
+  return (
+    title
+      .toLowerCase()
+      .replace(/[/:;,"'@#?$%^*+=!|<>()&""'']/g, "")
+      // Typographic quotes: ZDF/SRF write «Shaun das Schaf – Der Film» – ...
+      .replace(/[«»„“”‘’]/g, "")
+      // Dashes and dots separate words: "Dampfnudelblues. Ein Eberhoferkrimi"
+      // must contain the word "dampfnudelblues" for the whole-word match below.
+      .replace(/[-–—.]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+  );
 }
 
 /**
@@ -70,6 +113,40 @@ function levenshteinDistance(a: string, b: string): number {
 }
 
 /**
+ * Does `haystack` contain `needle` as a whole word sequence?
+ *
+ * A plain `includes()` matches inside words, which is how an hr documentary
+ * titled "Milky Chance - Two High School Friends Making Music" passed as the
+ * film "Milk".
+ */
+function containsWholeWords(haystack: string, needle: string): boolean {
+  if (!needle) return false;
+
+  const words = haystack.split(" ").filter(Boolean);
+  const needleWords = needle.split(" ").filter(Boolean);
+  if (needleWords.length === 0 || needleWords.length > words.length) return false;
+
+  for (let i = 0; i + needleWords.length <= words.length; i++) {
+    if (needleWords.every((word, offset) => words[i + offset] === word)) return true;
+  }
+  return false;
+}
+
+/**
+ * Does `haystack` begin with the words of `needle`?
+ */
+function startsWithWords(haystack: string, needle: string): boolean {
+  return !!needle && `${haystack} `.startsWith(`${needle} `);
+}
+
+/**
+ * Partial match in either direction, but always on word boundaries.
+ */
+function titlesOverlap(a: string, b: string): boolean {
+  return containsWholeWords(a, b) || containsWholeWords(b, a);
+}
+
+/**
  * Calculate string similarity (0-1)
  */
 function stringSimilarity(a: string, b: string): number {
@@ -79,6 +156,44 @@ function stringSimilarity(a: string, b: string): number {
   const distance = levenshteinDistance(a, b);
   const maxLength = Math.max(a.length, b.length);
   return 1 - distance / maxLength;
+}
+
+/**
+ * Is this Mediathek title the exact title of a *different* film?
+ *
+ * A non-exact title match only says the two titles are related. Sequels,
+ * remakes and films with similar names are related too: "Ferien auf
+ * Saltkrokan: Das Trollkind" (TMDB 433396) passed as "Ferien auf Saltkrokan"
+ * (1968), "Jakob der Lügner" as "Der Lügner", and Capra's "Ist das Leben nicht
+ * schön?" as Benigni's "Das Leben ist schön" -- all with a plausible runtime.
+ * TMDB knows those other films, so ask it: when the search for the Mediathek
+ * title finds another film under that title before it finds ours, the entry
+ * is that other film.
+ *
+ * When TMDB cannot answer, the entry keeps the benefit of the doubt.
+ */
+async function isAnotherFilm(itemTitle: string, movieData: TmdbMovieData): Promise<boolean> {
+  const query = stripBroadcastAnnotations(itemTitle)
+    .replace(/\s*\((?:S\d+\s*\/\s*)?E\d+\)/gi, "")
+    .replace(/[«»„“”"]/g, "")
+    .trim();
+  const candidates = await searchMovieCandidates(query);
+  if (!candidates) return false;
+
+  const normalizedQuery = normalizeTitle(query);
+  for (const candidate of candidates) {
+    if (candidate.id === movieData.tmdbId) return false;
+    const sameName = [candidate.title, candidate.originalTitle].some(
+      (name) => !!name && stringSimilarity(normalizeTitle(name), normalizedQuery) >= 0.9
+    );
+    if (sameName) {
+      console.log(
+        `[MovieMatcher] Skipping "${itemTitle}": it is "${candidate.title}" (TMDB ${candidate.id}), not TMDB ${movieData.tmdbId}`
+      );
+      return true;
+    }
+  }
+  return false;
 }
 
 export interface MovieMatchResult {
@@ -119,15 +234,33 @@ export async function matchMovieItems(
     )
       continue;
 
-    const normalizedTopic = normalizeTitle(item.topic);
-    const normalizedTitle = normalizeTitle(item.title);
-    const combinedTitle = normalizeTitle(`${item.topic} ${item.title}`);
+    // Broadcast annotations ("(Originalversion mit Untertitel)") are not part
+    // of the film's name -- comparing with them attached turns an exact match
+    // into a partial one.
+    const normalizedTopic = normalizeTitle(stripBroadcastAnnotations(item.topic));
+    const normalizedTitle = normalizeTitle(stripBroadcastAnnotations(item.title));
+    const combinedTitle = normalizeTitle(stripBroadcastAnnotations(`${item.topic} ${item.title}`));
 
     // Item duration in minutes
     const itemDurationMinutes = Math.floor(item.duration / 60);
     const durationDiff = Math.abs(movieRuntimeMinutes - itemDurationMinutes);
 
     if (minDurationSeconds > 0 && item.duration < minDurationSeconds) continue;
+
+    // One part of a serialised broadcast is not the film.
+    if (hasPartMarker(item.title) || hasPartMarker(item.topic)) {
+      console.log(`[MovieMatcher] Skipping part of a serialised broadcast: "${item.title}"`);
+      continue;
+    }
+
+    // A length far off the film's runtime means different content under the
+    // same name (featurette, interview, making-of).
+    if (!isRuntimePlausible(item.duration, movieRuntimeMinutes)) {
+      console.log(
+        `[MovieMatcher] Skipping "${item.title}" (${itemDurationMinutes} min): implausible for a ${movieRuntimeMinutes} min film`
+      );
+      continue;
+    }
 
     let titleMatch: "exact" | "fuzzy" | "partial" | null = null;
     let titleScore = 0;
@@ -154,17 +287,27 @@ export async function matchMovieItems(
         titleMatch = "fuzzy";
         titleScore = bestSimilarity * 100;
       } else if (
-        normalizedTopic.includes(normalizedGermanTitle) ||
-        normalizedGermanTitle.includes(normalizedTopic) ||
-        normalizedTitle.includes(normalizedGermanTitle) ||
-        normalizedGermanTitle.includes(normalizedTitle)
+        (titlesOverlap(normalizedTopic, normalizedGermanTitle) ||
+          titlesOverlap(normalizedTitle, normalizedGermanTitle)) &&
+        // A broadcast of the film leads with its name ("Guglhupfgeschwader -
+        // Spielfilm, Deutschland 2022", or "Wir machen Camping" under the topic
+        // "Familie Bundschuh"). A magazine piece puts it behind a headline:
+        // "Endlich im Kino: Wickie und die starken Männer" (Tigerenten Club,
+        // 57 min) passed as the 85 min film.
+        (startsWithWords(normalizedTitle, normalizedGermanTitle) ||
+          startsWithWords(combinedTitle, normalizedGermanTitle))
       ) {
         titleMatch = "partial";
         titleScore = 60;
       }
     }
 
-    // Try matching against original title if no German match
+    // Try matching against original title if no German match. Only a (near)
+    // exact match counts here: German broadcasters title films by their German
+    // name, so an original title that merely appears inside a longer title is
+    // someone talking about the film. "Krieg der Sterne" (original "Star Wars")
+    // otherwise matched a 127 min film podcast titled "So macht STAR WARS Spaß!
+    // AHSOKA Kritik / Folge 5 & 6" -- its length passes the runtime band.
     if (!titleMatch && normalizedOriginalTitle !== normalizedGermanTitle) {
       if (
         normalizedTopic === normalizedOriginalTitle ||
@@ -182,22 +325,25 @@ export async function matchMovieItems(
         if (bestSimilarity >= 0.9) {
           titleMatch = "exact";
           titleScore = bestSimilarity * 95;
-        } else if (bestSimilarity >= 0.7) {
-          titleMatch = "fuzzy";
-          titleScore = bestSimilarity * 90;
-        } else if (
-          normalizedTopic.includes(normalizedOriginalTitle) ||
-          normalizedOriginalTitle.includes(normalizedTopic) ||
-          normalizedTitle.includes(normalizedOriginalTitle) ||
-          normalizedOriginalTitle.includes(normalizedTitle)
-        ) {
-          titleMatch = "partial";
-          titleScore = 55;
         }
       }
     }
 
     if (!titleMatch) continue;
+
+    // A related but not identical title may name a different film. That
+    // includes an "exact" match that only came from the topic: KiKA files
+    // "Wickie und die starken Männer - Das magische Schwert" (2019) under the
+    // topic "Wickie und die starken Männer", which is also the German title of
+    // the 2009 film.
+    const titleItselfMatches = [normalizedGermanTitle, normalizedOriginalTitle].some(
+      (name) => !!name && stringSimilarity(normalizedTitle, name) >= 0.9
+    );
+    if (
+      (titleMatch !== "exact" || !titleItselfMatches) &&
+      (await isAnotherFilm(item.title, movieData))
+    )
+      continue;
 
     // Calculate duration score (0-20 points)
     let durationScore = 0;

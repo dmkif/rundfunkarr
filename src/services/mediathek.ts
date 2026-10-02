@@ -20,6 +20,7 @@ import {
   QualityPreference,
 } from "./newznab";
 import { matchMovieItems } from "./movie-matcher";
+import { hasPartMarker, stripBroadcastAnnotations } from "@/lib/titles";
 import { searchMovieByTitle } from "./tmdb";
 import { withoutYearSuffix } from "@/lib/show-names";
 import type {
@@ -217,6 +218,10 @@ export function titleMatchKey(title: string): string {
     .replace(/[-.\u2026]+/g, ".")
     .replace(/^\.+|\.+$/g, "");
 }
+
+// Re-exported for existing callers; the implementation lives in `@/lib/titles`
+// so that the movie matcher can share it without an import cycle.
+export { stripBroadcastAnnotations };
 
 // String similarity using Levenshtein distance
 function levenshteinDistance(a: string, b: string): number {
@@ -1108,14 +1113,28 @@ export async function fetchMovieSearchByQuery(
     return response;
   }
 
-  // Filter trailers and apply the configured minimum duration. Each URL variant
-  // is checked for HLS below so direct alternatives remain available.
+  // Filter trailers, serialised parts and apply the configured minimum
+  // duration. Each URL variant is checked for HLS below so direct alternatives
+  // remain available.
   const hlsEnabled = await isHlsEnabled();
-  const filteredResults = results.filter((item) => {
+  const prefiltered = results.filter((item) => {
     if (SKIP_KEYWORDS.some((kw) => item.title.includes(kw))) return false;
     if (minDuration > 0 && item.duration < minDuration) return false;
+    if (hasPartMarker(item.title) || hasPartMarker(item.topic)) return false;
     return true;
   });
+
+  // Every item emitted here carries the film's tmdbid/imdbid, so Radarr accepts
+  // it for that movie no matter what the release is called. Without a
+  // plausibility check any Mediathek hit for the search term -- a featurette, a
+  // talk show episode, a documentary about a band with a similar name -- would
+  // be grabbed as the film. When TMDB knows the film, run the results through
+  // the movie matcher (whole-word title relation plus runtime plausibility) and
+  // keep its ranking; without a TMDB hit, no IDs are attached and the coarse
+  // filter above is all we can do.
+  const filteredResults = tmdbMovie
+    ? (await matchMovieItems(prefiltered, tmdbMovie, minDuration)).map((match) => match.item)
+    : prefiltered;
 
   console.log(
     `[Mediathek] Results after movie filtering (min ${minDuration}s): ${filteredResults.length}`
@@ -1131,10 +1150,23 @@ export async function fetchMovieSearchByQuery(
   // Generate RSS items directly for the filtered results (as movies)
   const newznabItems: NewznabItem[] = [];
 
+  // Resolve the release year once. Prefer the year Radarr asked for, then the
+  // year TMDB reports for the film.
+  const tmdbYear = tmdbMovie?.releaseDate ? parseInt(tmdbMovie.releaseDate.slice(0, 4), 10) : null;
+
   for (const item of filteredResults) {
-    // Format the release title
-    const baseTitle = formatTitle(item.topic || item.title);
-    const year = new Date(item.filmlisteTimestamp * 1000).getFullYear();
+    // Format the release title.
+    //
+    // The item's own title is the broadcaster's name for the film; `topic` is
+    // merely the strand it aired in ("Kino - Filme", "Cinéma - Films"). Taking
+    // the topic first collapsed every film of such a strand into one release
+    // name, which Radarr rejects with "Unknown Movie. Unable to match to
+    // correct movie using release title."
+    const cleanedTitle = stripBroadcastAnnotations(item.title);
+    const baseTitle = formatTitle(cleanedTitle || item.topic || item.title);
+    // filmlisteTimestamp is only when the entry entered the Mediathek index
+    // (usually the current year), not when the film was released.
+    const year = searchYear ?? tmdbYear ?? new Date(item.filmlisteTimestamp * 1000).getFullYear();
 
     // Calculate size
     const size = item.size > 0 ? item.size : item.duration * 500000;

@@ -24,7 +24,10 @@ vi.mock("./rulesets", () => ({
   getAllTopics: () => [],
   getRulesetsForTopic: () => [],
 }));
-vi.mock("./tmdb", () => ({ searchMovieByTitle: vi.fn(async () => null) }));
+vi.mock("./tmdb", () => ({
+  searchMovieByTitle: vi.fn(async () => null),
+  searchMovieCandidates: vi.fn(async () => []),
+}));
 
 const video = {
   id: "11111111-1111-4111-8111-111111111111",

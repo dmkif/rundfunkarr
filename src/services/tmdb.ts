@@ -358,6 +358,76 @@ interface TmdbSearchMovieResult {
   }>;
 }
 
+type TmdbMovieSearchHit = TmdbSearchMovieResult["results"][number];
+
+export interface TmdbMovieCandidate {
+  id: number;
+  title: string;
+  originalTitle: string;
+}
+
+/**
+ * The top hits of a plain TMDB movie search, without fetching details.
+ * Returns null when TMDB cannot answer (no key, request failed), so callers
+ * can tell "no film by that name" apart from "unknown".
+ */
+export async function searchMovieCandidates(query: string): Promise<TmdbMovieCandidate[] | null> {
+  if (!query) return [];
+
+  const apiKey = await getApiKey();
+  if (!apiKey) return null;
+
+  const cacheKey = `tmdb_movie_candidates_${query}`;
+  const cached = tvdbCache.get(cacheKey) as TmdbMovieCandidate[] | undefined;
+  if (cached) return cached;
+
+  try {
+    const searchUrl = getApiUrl(
+      `/search/movie?query=${encodeURIComponent(query)}&language=de-DE`,
+      apiKey
+    );
+    const response = await fetchWithRetry(searchUrl, { headers: getAuthHeaders(apiKey) });
+    if (!response.ok) {
+      console.error(`[TMDB] Movie candidate search failed: ${response.status}`);
+      return null;
+    }
+    const data: TmdbSearchMovieResult = await response.json();
+    const candidates = (data.results || []).slice(0, 5).map((hit) => ({
+      id: hit.id,
+      title: hit.title,
+      originalTitle: hit.original_title,
+    }));
+    tvdbCache.set(cacheKey, candidates);
+    return candidates;
+  } catch (error) {
+    console.error("[TMDB] Movie candidate search error:", error);
+    return null;
+  }
+}
+
+/**
+ * Choose the search hit that best fits the requested year.
+ * Exported for tests; see the call site for why TMDB's own ranking is not enough.
+ */
+export function pickBestMovieResult(
+  results: TmdbMovieSearchHit[],
+  year?: number | null
+): TmdbMovieSearchHit {
+  if (!year) {
+    return results[0];
+  }
+
+  const yearOf = (r: TmdbMovieSearchHit): number =>
+    r.release_date ? parseInt(r.release_date.slice(0, 4), 10) : NaN;
+
+  return (
+    results.find((r) => yearOf(r) === year) ??
+    // NaN comparisons are false, so undated hits never win here.
+    results.find((r) => Math.abs(yearOf(r) - year) <= 1) ??
+    results[0]
+  );
+}
+
 /**
  * Search for a movie by title (and optionally year)
  * Returns the best matching movie from TMDB
@@ -411,9 +481,14 @@ export async function searchMovieByTitle(
       return null;
     }
 
-    // Get the first (best) match
-    const tmdbId = searchData.results[0].id;
-    console.log(`[TMDB] Found movie: "${searchData.results[0].title}" (TMDB ID: ${tmdbId})`);
+    // Pick the best match. TMDB's `year` parameter is a loose filter -- it
+    // matches release dates across all regions, so results[0] can be a
+    // different film that merely ranks higher for the same title. When a year
+    // is known, prefer a result that actually carries it (allowing +/-1 year
+    // for festival vs. regular release) before falling back to TMDB's ranking.
+    const best = pickBestMovieResult(searchData.results, year);
+    const tmdbId = best.id;
+    console.log(`[TMDB] Found movie: "${best.title}" (TMDB ID: ${tmdbId})`);
 
     // Get full movie info
     const movieData = await getMovieInfoByTmdbId(tmdbId);
