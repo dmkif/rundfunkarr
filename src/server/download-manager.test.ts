@@ -15,16 +15,20 @@ import path from "path";
 const {
   configFindUnique,
   downloadCount,
+  downloadFindFirst,
   downloadFindUnique,
   downloadUpdate,
+  downloadUpdateMany,
   ffmpegModuleLoaded,
   convertMp4ToMkv,
   downloadHlsStream,
 } = vi.hoisted(() => ({
   configFindUnique: vi.fn(),
   downloadCount: vi.fn(),
+  downloadFindFirst: vi.fn(),
   downloadFindUnique: vi.fn(),
   downloadUpdate: vi.fn(),
+  downloadUpdateMany: vi.fn(),
   ffmpegModuleLoaded: vi.fn(),
   convertMp4ToMkv: vi.fn(),
   downloadHlsStream: vi.fn(),
@@ -35,8 +39,10 @@ vi.mock("@/lib/db", () => ({
     config: { findUnique: configFindUnique },
     download: {
       count: downloadCount,
+      findFirst: downloadFindFirst,
       findUnique: downloadFindUnique,
       update: downloadUpdate,
+      updateMany: downloadUpdateMany,
     },
   },
 }));
@@ -49,7 +55,7 @@ vi.mock("./ffmpeg", () => {
 vi.mock("./ytdlp", () => ({ downloadHlsStream }));
 
 import { clearSettingsCache } from "@/lib/settings";
-import { processDownload } from "./download-manager";
+import { processDownload, resumeInterruptedDownloads } from "./download-manager";
 
 let testRoot: string;
 
@@ -374,4 +380,37 @@ it.each(["network error", "stall"])("removes partial files after a %s", async (f
   } finally {
     vi.useRealTimers();
   }
+});
+
+describe("resumeInterruptedDownloads", () => {
+  // A container restart mid-transfer left rows in "downloading" with no worker:
+  // processQueue only picks "queued" rows, so they stayed stuck for good.
+  it("re-queues in-flight downloads and starts working the queue", async () => {
+    downloadUpdateMany.mockResolvedValue({ count: 2 });
+    downloadCount.mockResolvedValue(3);
+    downloadFindFirst.mockResolvedValue(null);
+
+    const count = await resumeInterruptedDownloads();
+
+    expect(count).toBe(2);
+    expect(downloadUpdateMany).toHaveBeenCalledWith({
+      where: { status: { in: ["downloading", "converting"] } },
+      data: { status: "queued", progress: 0, downloadedBytes: 0, speed: 0 },
+    });
+    await vi.waitFor(() =>
+      expect(downloadFindFirst).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { status: "queued" } })
+      )
+    );
+  });
+
+  it("leaves the queue alone when nothing is waiting", async () => {
+    downloadUpdateMany.mockResolvedValue({ count: 0 });
+    downloadCount.mockResolvedValue(0);
+    downloadFindFirst.mockClear();
+
+    await resumeInterruptedDownloads();
+
+    expect(downloadFindFirst).not.toHaveBeenCalled();
+  });
 });

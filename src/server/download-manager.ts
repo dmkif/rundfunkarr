@@ -68,6 +68,40 @@ export async function startDownloadProcessing(): Promise<void> {
   processingPromise = null;
 }
 
+// Statuses that only exist while a worker of the running process owns the
+// download. Nothing persists the worker itself, so after a restart a row in
+// one of these states has no owner left.
+const IN_FLIGHT_STATUSES = ["downloading", "converting"];
+
+/**
+ * Re-queue downloads that a previous process left in flight, then work the
+ * queue.
+ *
+ * processQueue only ever picks "queued" rows, and it only runs when a new
+ * download is added. A container restart in the middle of a transfer therefore
+ * left the row in "downloading" for good: no worker, no error, no retry, and
+ * the *arr app shows it stuck at the last reported percentage. Items that
+ * were still "queued" at shutdown waited for the next grab as well.
+ *
+ * The transfer starts over. The temp file is overwritten by the next attempt.
+ */
+export async function resumeInterruptedDownloads(): Promise<number> {
+  const { count } = await prisma.download.updateMany({
+    where: { status: { in: IN_FLIGHT_STATUSES } },
+    data: { status: "queued", progress: 0, downloadedBytes: 0, speed: 0 },
+  });
+  if (count > 0) {
+    console.log(`[Download] Re-queued ${count} download(s) interrupted by a restart`);
+  }
+
+  const queued = await prisma.download.count({ where: { status: "queued" } });
+  if (queued > 0) {
+    startDownloadProcessing().catch(console.error);
+  }
+
+  return count;
+}
+
 async function processQueue(): Promise<void> {
   while (true) {
     // Get next queued download
