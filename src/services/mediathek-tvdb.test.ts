@@ -18,6 +18,8 @@ vi.mock("@/lib/settings", () => ({
   getMinDurationSeconds: vi.fn(async () => 300),
 }));
 vi.mock("./shows", () => ({ getShowInfoByTvdbId: vi.fn() }));
+// The fixture URLs do not exist; keep the reachability probe off the network.
+vi.mock("@/lib/reachability", () => ({ dropGoneItems: vi.fn(async (items: unknown[]) => items) }));
 vi.mock("./rulesets", () => ({
   ensureRulesetsLoaded: vi.fn(async () => undefined),
   getAllTopics: vi.fn(),

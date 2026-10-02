@@ -28,6 +28,8 @@ vi.mock("./tmdb", () => ({
   searchMovieByTitle: vi.fn(async () => null),
   searchMovieCandidates: vi.fn(async () => []),
 }));
+// The fixture URLs do not exist; keep the reachability probe off the network.
+vi.mock("@/lib/reachability", () => ({ dropGoneItems: vi.fn(async (items: unknown[]) => items) }));
 
 const video = {
   id: "11111111-1111-4111-8111-111111111111",
