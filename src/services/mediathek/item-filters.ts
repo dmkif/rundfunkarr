@@ -1,9 +1,10 @@
 import { isStreamingUrl } from "@/lib/stream-url";
+import { isAccessibilityVersion } from "@/lib/accessibility";
 import { runRulesetRegex } from "@/server/ruleset-regex";
 import type { ApiResultItem, Filter, TitleRegexRule, MatchType, TitleRegexRuleType } from "@/types";
 
 // Keywords that are always skipped (trailers, outtakes, etc.)
-export const SKIP_KEYWORDS = ["Trailer", "Outtakes:", "(klare Sprache)"];
+export const SKIP_KEYWORDS = ["Trailer", "Outtakes:"];
 
 export function shouldSkipItem(
   item: ApiResultItem,
@@ -13,6 +14,7 @@ export function shouldSkipItem(
   // Skip m3u8 streams unless HLS is enabled, items with skip keywords, and items shorter than minDuration
   if (!hlsEnabled && isStreamingUrl(item.url_video)) return true;
   if (SKIP_KEYWORDS.some((kw) => item.title.includes(kw))) return true;
+  if (isAccessibilityVersion(item.title) || isAccessibilityVersion(item.topic)) return true;
   if (minDuration > 0 && item.duration < minDuration) return true;
   return false;
 }
