@@ -3,6 +3,7 @@ import { getMinDurationSeconds } from "@/lib/settings";
 import type { ApiResultItem, TvdbData, Ruleset, Filter } from "@/types";
 import { isHlsEnabled } from "./preferences";
 import { SKIP_KEYWORDS, firstRejectedFilter } from "./item-filters";
+import { isAccessibilityVersion } from "@/lib/accessibility";
 import { applyRulesetFilters } from "./ruleset-filter";
 
 export interface RuleDiagnosis {
@@ -34,6 +35,11 @@ export async function diagnoseRuleset(
     return { ...result, reason: "HLS-Downloads sind ausgeschaltet." };
   if (SKIP_KEYWORDS.some((keyword) => item.title.includes(keyword)))
     return { ...result, reason: "Titel enthält einen ausgeschlossenen Zusatz, etwa Trailer." };
+  if (isAccessibilityVersion(item.title) || isAccessibilityVersion(item.topic))
+    return {
+      ...result,
+      reason: "Barrierefreie Fassung (Audiodeskription, Gebärdensprache, klare Sprache).",
+    };
   if (item.duration < minDuration)
     return {
       ...result,

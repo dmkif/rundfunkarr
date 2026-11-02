@@ -19,6 +19,7 @@ const log = createLogger("Mediathek");
 import { QUERY_FIELDS, getQualityPreference, isHlsEnabled } from "./preferences";
 import { SKIP_KEYWORDS, preferredUrl } from "./item-filters";
 import { dropGoneItems } from "@/lib/reachability";
+import { isAccessibilityVersion } from "@/lib/accessibility";
 import { formatTitle, stripBroadcastAnnotations } from "./title-parsing";
 
 /**
@@ -95,7 +96,10 @@ export async function fetchMovieSearchResults(
 
   // Filter out trailers and other non-movie content
   const filteredResults = allResults.filter(
-    (item) => !SKIP_KEYWORDS.some((kw) => item.title.includes(kw))
+    (item) =>
+      !SKIP_KEYWORDS.some((kw) => item.title.includes(kw)) &&
+      !isAccessibilityVersion(item.title) &&
+      !isAccessibilityVersion(item.topic)
   );
   log.debug(`Results after filtering: ${filteredResults.length}`);
 
@@ -203,6 +207,7 @@ export async function fetchMovieSearchByQuery(
   const hlsEnabled = await isHlsEnabled();
   const candidates = results.filter((item) => {
     if (SKIP_KEYWORDS.some((kw) => item.title.includes(kw))) return false;
+    if (isAccessibilityVersion(item.title) || isAccessibilityVersion(item.topic)) return false;
     if (minDuration > 0 && item.duration < minDuration) return false;
     return true;
   });
