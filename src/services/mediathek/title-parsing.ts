@@ -15,6 +15,19 @@ export function formatTitle(title: string): string {
   return formatted;
 }
 
+/**
+ * Mediathek titles carry broadcast/accessibility annotations in parentheses,
+ * e.g. "Lost Country (Originalversion mit Untertitel)" or "Tatort
+ * (Audiodeskription)". They are not part of the film's name and keep Radarr
+ * from matching the release, so strip them before building a release title.
+ */
+const BROADCAST_ANNOTATION =
+  /\s*\([^()]*(?:Untertitel|Audiodeskription|Originalversion|Originalfassung|Hörfassung|OmU|klare Sprache|Gebärdensprache|DGS)[^()]*\)/gi;
+
+export function stripBroadcastAnnotations(title: string): string {
+  return title.replace(BROADCAST_ANNOTATION, "").replace(/\s+/g, " ").trim();
+}
+
 // String similarity using Levenshtein distance
 function levenshteinDistance(a: string, b: string): number {
   const matrix: number[][] = [];
