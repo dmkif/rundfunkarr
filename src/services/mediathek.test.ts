@@ -22,6 +22,7 @@ vi.mock("./rulesets", () => ({
 }));
 vi.mock("./tmdb", () => ({
   searchMovieByTitle: vi.fn().mockResolvedValue(null),
+  searchMovieCandidates: vi.fn().mockResolvedValue([]),
 }));
 
 import {

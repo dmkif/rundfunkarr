@@ -386,6 +386,51 @@ export function pickBestMovieResult(
   );
 }
 
+export interface TmdbMovieCandidate {
+  id: number;
+  title: string;
+  originalTitle: string;
+}
+
+/**
+ * The top hits of a plain TMDB movie search, without fetching details.
+ * Returns null when TMDB cannot answer (no key, request failed), so callers
+ * can tell "no film by that name" apart from "unknown".
+ */
+export async function searchMovieCandidates(query: string): Promise<TmdbMovieCandidate[] | null> {
+  if (!query) return [];
+
+  const apiKey = await getApiKey();
+  if (!apiKey) return null;
+
+  const cacheKey = `tmdb_movie_candidates_${query}`;
+  const cached = tvdbCache.get(cacheKey) as TmdbMovieCandidate[] | undefined;
+  if (cached) return cached;
+
+  try {
+    const searchUrl = getApiUrl(
+      `/search/movie?query=${encodeURIComponent(query)}&language=de-DE`,
+      apiKey
+    );
+    const response = await fetchWithRetry(searchUrl, { headers: getAuthHeaders(apiKey) });
+    if (!response.ok) {
+      log.error(`Movie candidate search failed: ${response.status}`);
+      return null;
+    }
+    const data: TmdbSearchMovieResult = await response.json();
+    const candidates = (data.results || []).slice(0, 5).map((hit) => ({
+      id: hit.id,
+      title: hit.title,
+      originalTitle: hit.original_title,
+    }));
+    tvdbCache.set(cacheKey, candidates);
+    return candidates;
+  } catch (error) {
+    log.error("Movie candidate search error:", error);
+    return null;
+  }
+}
+
 /**
  * Search for a movie by title (and optionally year)
  * Returns the best matching movie from TMDB
