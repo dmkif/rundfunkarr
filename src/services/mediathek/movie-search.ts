@@ -18,7 +18,7 @@ import { createLogger } from "@/lib/logger";
 const log = createLogger("Mediathek");
 import { QUERY_FIELDS, getQualityPreference, isHlsEnabled } from "./preferences";
 import { SKIP_KEYWORDS } from "./item-filters";
-import { formatTitle } from "./title-parsing";
+import { formatTitle, stripBroadcastAnnotations } from "./title-parsing";
 
 /**
  * Search for a movie in the Mediathek by TMDB data
@@ -220,12 +220,25 @@ export async function fetchMovieSearchByQuery(
   // Generate RSS items directly for the filtered results (as movies)
   const newznabItems: NewznabItem[] = [];
 
+  // Resolve the release year once. Prefer the year Radarr asked for, then the
+  // year TMDB reports for the film.
+  const tmdbYear = tmdbMovie?.releaseDate ? parseInt(tmdbMovie.releaseDate.slice(0, 4), 10) : null;
+
   for (const item of filteredResults) {
     const movieIds = matchedItems.has(item) ? tmdbMovie : null;
 
-    // Format the release title
-    const baseTitle = formatTitle(item.topic || item.title);
-    const year = new Date(item.filmlisteTimestamp * 1000).getFullYear();
+    // Format the release title.
+    //
+    // The item's own title is the broadcaster's name for the film; `topic` is
+    // merely the strand it aired in ("Kino - Filme", "Cinéma - Films"). Taking
+    // the topic first collapsed every film of such a strand into one release
+    // name, which Radarr rejects with "Unknown Movie. Unable to match to
+    // correct movie using release title."
+    const cleanedTitle = stripBroadcastAnnotations(item.title);
+    const baseTitle = formatTitle(cleanedTitle || item.topic || item.title);
+    // filmlisteTimestamp is only when the entry entered the Mediathek index
+    // (usually the current year), not when the film was released.
+    const year = searchYear ?? tmdbYear ?? new Date(item.filmlisteTimestamp * 1000).getFullYear();
 
     // Calculate size
     const size = item.size > 0 ? item.size : item.duration * 500000;
