@@ -6,7 +6,7 @@ import {
   findEpisodeBySeasonAndNumber,
 } from "@/types";
 import { buildTitleFromRegexRules, extractValueUsingRegex } from "./item-filters";
-import { formatTitle, stringSimilarity, tryParseDate } from "./title-parsing";
+import { stringSimilarity, titleMatchKey, tryParseDate } from "./title-parsing";
 
 export type ShowLookup = (tvdbId: number) => Promise<TvdbData | null>;
 
@@ -48,7 +48,7 @@ export async function matchesSeasonAndEpisode(
   return {
     episode: matchedEpisode,
     item,
-    showName: tvdbData.name || tvdbData.germanName || "",
+    showName: tvdbData.germanName || tvdbData.name || "",
     matchedTitle: `S${season}E${episode}`,
     tvdbId: ruleset.media.media_tvdbId,
   };
@@ -74,7 +74,7 @@ export async function matchesAbsoluteEpisodeNumber(
   return {
     episode: matchedEpisode,
     item,
-    showName: tvdbData.name || tvdbData.germanName || "",
+    showName: tvdbData.germanName || tvdbData.name || "",
     matchedTitle: `#${absoluteNumber}`,
     tvdbId: ruleset.media.media_tvdbId,
   };
@@ -92,18 +92,18 @@ export async function matchesItemTitleIncludes(
   const constructedTitle = await buildTitleFromRegexRules(item, ruleset.titleRegexRules);
   if (!constructedTitle) return null;
 
-  const formattedConstructed = formatTitle(constructedTitle).toLowerCase();
+  const formattedConstructed = titleMatchKey(constructedTitle);
 
   // First try exact contains match
   let matchedEpisode = tvdbData.episodes.find((ep) =>
-    formatTitle(ep.name).toLowerCase().includes(formattedConstructed)
+    titleMatchKey(ep.name).includes(formattedConstructed)
   );
 
   // If no exact match, try fuzzy matching with threshold
   if (!matchedEpisode && threshold < 1.0) {
     let bestSimilarity = 0;
     for (const ep of tvdbData.episodes) {
-      const similarity = stringSimilarity(formatTitle(ep.name), formattedConstructed);
+      const similarity = stringSimilarity(titleMatchKey(ep.name), formattedConstructed);
       if (similarity >= threshold && similarity > bestSimilarity) {
         bestSimilarity = similarity;
         matchedEpisode = ep;
@@ -116,7 +116,7 @@ export async function matchesItemTitleIncludes(
   return {
     episode: matchedEpisode,
     item,
-    showName: tvdbData.name || tvdbData.germanName || "",
+    showName: tvdbData.germanName || tvdbData.name || "",
     matchedTitle: constructedTitle,
     tvdbId: ruleset.media.media_tvdbId,
   };
@@ -134,18 +134,16 @@ export async function matchesItemTitleExact(
   const constructedTitle = await buildTitleFromRegexRules(item, ruleset.titleRegexRules);
   if (!constructedTitle) return null;
 
-  const formattedTitle = formatTitle(constructedTitle).toLowerCase();
+  const formattedTitle = titleMatchKey(constructedTitle);
 
   // First try exact match
-  let matchedEpisodes = tvdbData.episodes.filter(
-    (ep) => formatTitle(ep.name).toLowerCase() === formattedTitle
-  );
+  let matchedEpisodes = tvdbData.episodes.filter((ep) => titleMatchKey(ep.name) === formattedTitle);
 
   // If no exact match and threshold allows, try very high similarity matching
   if (matchedEpisodes.length === 0 && threshold < 1.0) {
     const highThreshold = Math.max(threshold, 0.9); // At least 90% for "exact" matching
     matchedEpisodes = tvdbData.episodes.filter((ep) => {
-      const similarity = stringSimilarity(formatTitle(ep.name).toLowerCase(), formattedTitle);
+      const similarity = stringSimilarity(titleMatchKey(ep.name), formattedTitle);
       return similarity >= highThreshold;
     });
   }
@@ -176,7 +174,7 @@ export async function matchesItemTitleExact(
   return {
     episode: matchedEpisode,
     item,
-    showName: tvdbData.name || tvdbData.germanName || "",
+    showName: tvdbData.germanName || tvdbData.name || "",
     matchedTitle: constructedTitle,
     tvdbId: ruleset.media.media_tvdbId,
   };
@@ -202,7 +200,7 @@ export async function matchesItemTitleEqualsAirdate(
   return {
     episode: matchedEpisode,
     item,
-    showName: tvdbData.name || tvdbData.germanName || "",
+    showName: tvdbData.germanName || tvdbData.name || "",
     matchedTitle: constructedTitle,
     tvdbId: ruleset.media.media_tvdbId,
   };

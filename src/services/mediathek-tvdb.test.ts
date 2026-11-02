@@ -370,3 +370,52 @@ it("strips series name umlauts in release titles when the setting is on", async 
   vi.mocked(isSeriesUmlautStrippingEnabled).mockResolvedValueOnce(true);
   expect(await fetchSearchResultsById(show, "14", "7", 100, 0)).toContain("Checker.Tobi.S14E07");
 });
+
+describe("foreign-language series", () => {
+  // Les Schtroumpfs (2021) is French; the Mediathek and Sonarr with German
+  // metadata know it as "Die Schlümpfe".
+  const smurfs: TvdbData = {
+    id: 392426,
+    name: "Les Schtroumpfs (2021)",
+    germanName: "Die Schlümpfe (2021)",
+    aliases: [],
+    episodes: [
+      {
+        name: "Schlumpf in die Zukunft - Teil 1",
+        seasonNumber: 1,
+        episodeNumber: 5,
+        aired: null,
+        runtime: 11,
+      },
+      {
+        name: "Schlumpf in die Zukunft - Teil 2",
+        seasonNumber: 1,
+        episodeNumber: 6,
+        aired: null,
+        runtime: 11,
+      },
+    ],
+  };
+  const smurfsItem = item({
+    channel: "KiKA",
+    topic: "Die Schlümpfe",
+    title: "Schlumpf in die Zukunft, Teil 1",
+    duration: 660,
+    url_video: "https://example.com/smurfs_1.mp4",
+  });
+
+  beforeEach(() => {
+    vi.mocked(getShowInfoByTvdbId).mockResolvedValue(smurfs);
+    setRules([rule("Die Schlümpfe", smurfs.id)]);
+  });
+
+  it("searches without TVDB's year and names the release in German", async () => {
+    mockSearch({ "Die Schlümpfe": [smurfsItem] });
+
+    const xml = await fetchSearchResultsById(smurfs, "1", "5", 100, 0);
+
+    expect(requests()).toContainEqual({ fields: expect.any(Array), query: "Die Schlümpfe" });
+    expect(xml).toContain("Die.Schluempfe.2021.S01E05");
+    expect(xml).not.toContain("Schtroumpfs");
+  });
+});
