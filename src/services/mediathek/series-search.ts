@@ -31,6 +31,7 @@ import {
   findEpisodeBySeasonAndNumber,
 } from "@/types";
 import { createLogger } from "@/lib/logger";
+import { withoutYearSuffix } from "@/lib/show-names";
 
 const log = createLogger("Mediathek");
 import { QUERY_FIELDS, getMatchingSettings, getQualityPreference } from "./preferences";
@@ -143,7 +144,7 @@ export async function fetchSearchResultsById(
     getMatchingSettings(),
     isSeriesUmlautStrippingEnabled(),
   ]);
-  const searchQuery = tvdbData.germanName || tvdbData.name;
+  const searchQuery = withoutYearSuffix(tvdbData.germanName || tvdbData.name);
   await ensureRulesetsLoaded();
   const rulesetSnapshot = new Map(
     getAllTopics()

@@ -48,7 +48,7 @@ export async function matchesSeasonAndEpisode(
   return {
     episode: matchedEpisode,
     item,
-    showName: tvdbData.name || tvdbData.germanName || "",
+    showName: tvdbData.germanName || tvdbData.name || "",
     matchedTitle: `S${season}E${episode}`,
     tvdbId: ruleset.media.media_tvdbId,
   };
@@ -74,7 +74,7 @@ export async function matchesAbsoluteEpisodeNumber(
   return {
     episode: matchedEpisode,
     item,
-    showName: tvdbData.name || tvdbData.germanName || "",
+    showName: tvdbData.germanName || tvdbData.name || "",
     matchedTitle: `#${absoluteNumber}`,
     tvdbId: ruleset.media.media_tvdbId,
   };
@@ -116,7 +116,7 @@ export async function matchesItemTitleIncludes(
   return {
     episode: matchedEpisode,
     item,
-    showName: tvdbData.name || tvdbData.germanName || "",
+    showName: tvdbData.germanName || tvdbData.name || "",
     matchedTitle: constructedTitle,
     tvdbId: ruleset.media.media_tvdbId,
   };
@@ -174,7 +174,7 @@ export async function matchesItemTitleExact(
   return {
     episode: matchedEpisode,
     item,
-    showName: tvdbData.name || tvdbData.germanName || "",
+    showName: tvdbData.germanName || tvdbData.name || "",
     matchedTitle: constructedTitle,
     tvdbId: ruleset.media.media_tvdbId,
   };
@@ -200,7 +200,7 @@ export async function matchesItemTitleEqualsAirdate(
   return {
     episode: matchedEpisode,
     item,
-    showName: tvdbData.name || tvdbData.germanName || "",
+    showName: tvdbData.germanName || tvdbData.name || "",
     matchedTitle: constructedTitle,
     tvdbId: ruleset.media.media_tvdbId,
   };
