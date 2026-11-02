@@ -5,6 +5,15 @@ import type { ApiResultItem, Filter, TitleRegexRule, MatchType, TitleRegexRuleTy
 // Keywords that are always skipped (trailers, outtakes, etc.)
 export const SKIP_KEYWORDS = ["Trailer", "Outtakes:", "(klare Sprache)"];
 
+/**
+ * The variant a reachability probe should use: a Mediathek asset expires as a
+ * whole, so probing the highest quality on offer stands in for all of them --
+ * and that is the one Radarr grabs under a normal quality profile.
+ */
+export function preferredUrl(item: ApiResultItem): string {
+  return item.url_video_hd || item.url_video || item.url_video_low;
+}
+
 export function shouldSkipItem(
   item: ApiResultItem,
   minDuration: number,
