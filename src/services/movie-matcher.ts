@@ -2,6 +2,7 @@ import { isStreamingUrl } from "@/lib/stream-url";
 import type { ApiResultItem, TmdbMovieData } from "@/types";
 import { getSetting } from "@/lib/settings";
 import { createLogger } from "@/lib/logger";
+import { searchMovieCandidates } from "./tmdb";
 
 const log = createLogger("MovieMatcher");
 
@@ -34,12 +35,16 @@ async function getDurationTolerance(): Promise<number> {
  * - Normalize spaces
  */
 function normalizeTitle(title: string): string {
-  return title
-    .toLowerCase()
-    .replace(/[/:;,"'@#?$%^*+=!|<>()&""'']/g, "")
-    .replace(/[-–—]/g, " ") // Normalize different dash types
-    .replace(/\s+/g, " ")
-    .trim();
+  return (
+    title
+      .toLowerCase()
+      .replace(/[/:;,"'@#?$%^*+=!|<>()&""'']/g, "")
+      // Typographic quotes: ZDF/SRF write «Shaun das Schaf – Der Film» – ...
+      .replace(/[«»„“”‘’]/g, "")
+      .replace(/[-–—]/g, " ") // Normalize different dash types
+      .replace(/\s+/g, " ")
+      .trim()
+  );
 }
 
 /**
@@ -219,6 +224,48 @@ function matchTitle(
 }
 
 /**
+ * Is this Mediathek title the exact title of a *different* film?
+ *
+ * A non-exact title match only says the two titles are related. Sequels,
+ * remakes and films with similar names are related too: "Ferien auf
+ * Saltkrokan: Das Trollkind" (TMDB 433396) passed as "Ferien auf Saltkrokan"
+ * (1968), "Otto - Der neue Film" as "Otto - Der Film", and Capra's "Ist das
+ * Leben nicht schön?" as Benigni's "Das Leben ist schön" -- all with a
+ * plausible runtime. TMDB knows those other films, so ask it: when the search
+ * for the Mediathek title finds another film under that title before it finds
+ * ours, the entry is that other film.
+ *
+ * When TMDB cannot answer, the entry keeps the benefit of the doubt.
+ */
+// Parenthesised notes ("(Audiodeskription)", "(S01/E02)") are not part of a film's name
+function withoutParenthesisedNotes(title: string): string {
+  return title.replace(/\s*\([^()]*\)/g, "").trim();
+}
+
+async function isAnotherFilm(itemTitle: string, movieData: TmdbMovieData): Promise<boolean> {
+  const query = withoutParenthesisedNotes(itemTitle)
+    .replace(/[«»„“”"]/g, "")
+    .trim();
+  const candidates = await searchMovieCandidates(query);
+  if (!candidates) return false;
+
+  const normalizedQuery = normalizeTitle(query);
+  for (const candidate of candidates) {
+    if (candidate.id === movieData.tmdbId) return false;
+    const sameName = [candidate.title, candidate.originalTitle].some(
+      (name) => !!name && stringSimilarity(normalizeTitle(name), normalizedQuery) >= 0.9
+    );
+    if (sameName) {
+      log.debug(
+        `Skipping "${itemTitle}": it is "${candidate.title}" (TMDB ${candidate.id}), not TMDB ${movieData.tmdbId}`
+      );
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Largest runtime difference in minutes that still counts as the same movie.
  * TV versions often differ from the TMDB runtime by 10–15 %, so 25 % are
  * allowed, but at least twice the configured tolerance for short films.
@@ -253,6 +300,7 @@ export async function matchMovieItems(
   const runtimeKnown = movieRuntimeMinutes > 0;
   const maxRuntimeDifference = getMaxRuntimeDifference(movieRuntimeMinutes, durationTolerance);
   let rejectedByRuntime = 0;
+  let rejectedAsOtherFilm = 0;
 
   log.debug(
     `Matching ${items.length} items against "${movieData.germanTitle}" (original: "${movieData.title}"), runtime: ${movieRuntimeMinutes} min, hlsEnabled: ${hlsEnabled}`
@@ -303,6 +351,23 @@ export async function matchMovieItems(
       continue;
     }
 
+    // A related but not identical title may name a different film. That
+    // includes an "exact" match that only came from the topic: KiKA files
+    // "Wickie und die starken Männer - Das magische Schwert" (2019) under the
+    // topic "Wickie und die starken Männer", which is also the German title of
+    // the 2009 film.
+    const normalizedItemTitle = normalizeTitle(withoutParenthesisedNotes(item.title));
+    const titleItselfMatches = [normalizedGermanTitle, normalizedOriginalTitle].some(
+      (name) => !!name && stringSimilarity(normalizedItemTitle, name) >= 0.9
+    );
+    if (
+      (titleMatch !== "exact" || !titleItselfMatches) &&
+      (await isAnotherFilm(item.title, movieData))
+    ) {
+      rejectedAsOtherFilm++;
+      continue;
+    }
+
     // Calculate duration score (0-20 points)
     let durationScore = 0;
     if (runtimeComparable) {
@@ -337,6 +402,9 @@ export async function matchMovieItems(
     log.debug(
       `Rejected ${rejectedByRuntime} title matches whose duration does not confirm the TMDB runtime`
     );
+  }
+  if (rejectedAsOtherFilm > 0) {
+    log.debug(`Rejected ${rejectedAsOtherFilm} title matches that TMDB knows as a different film`);
   }
   log.debug(`Found ${results.length} matches`);
   if (results.length > 0) {
