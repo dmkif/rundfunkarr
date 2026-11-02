@@ -12,6 +12,10 @@ import { searchVideos, getLatestVideos } from "./srgssr-api";
 import { queryMediathekView } from "@/lib/mediathek-client";
 
 const { settings } = vi.hoisted(() => ({ settings: new Map<string, string>() }));
+
+// The fixture URLs do not exist; keep the reachability probe off the network.
+vi.mock("@/lib/reachability", () => ({ dropGoneItems: vi.fn(async (items: unknown[]) => items) }));
+
 vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn(async (key: string) => settings.get(key) ?? null),
   getMinDurationSeconds: vi.fn(async () => 300),

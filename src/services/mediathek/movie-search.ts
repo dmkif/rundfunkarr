@@ -17,7 +17,8 @@ import { createLogger } from "@/lib/logger";
 
 const log = createLogger("Mediathek");
 import { QUERY_FIELDS, getQualityPreference, isHlsEnabled } from "./preferences";
-import { SKIP_KEYWORDS } from "./item-filters";
+import { SKIP_KEYWORDS, preferredUrl } from "./item-filters";
+import { dropGoneItems } from "@/lib/reachability";
 import { formatTitle, stripBroadcastAnnotations } from "./title-parsing";
 
 /**
@@ -106,7 +107,14 @@ export async function fetchMovieSearchResults(
   }
 
   // Match results against movie data
-  const matchResults = await matchMovieItems(filteredResults, movieData, minDuration);
+  const matched = await matchMovieItems(filteredResults, movieData, minDuration);
+
+  // The index outlives the media: drop entries whose video the broadcaster has
+  // already taken down, so they cannot turn into a failed download.
+  const matchResults = await dropGoneItems(matched, (match) => preferredUrl(match.item));
+  if (matchResults.length < matched.length) {
+    log.info(`Dropped ${matched.length - matchResults.length} entr(ies) whose video is gone`);
+  }
 
   if (matchResults.length === 0) {
     log.debug(`No matches found for movie`);
@@ -193,11 +201,18 @@ export async function fetchMovieSearchByQuery(
   // Filter trailers and apply the configured minimum duration. Each URL variant
   // is checked for HLS below so direct alternatives remain available.
   const hlsEnabled = await isHlsEnabled();
-  const filteredResults = results.filter((item) => {
+  const candidates = results.filter((item) => {
     if (SKIP_KEYWORDS.some((kw) => item.title.includes(kw))) return false;
     if (minDuration > 0 && item.duration < minDuration) return false;
     return true;
   });
+
+  // Same as in the tmdbid path: an entry the broadcaster has taken down would
+  // only become a failed download and a blocklist entry.
+  const filteredResults = await dropGoneItems(candidates, preferredUrl);
+  if (filteredResults.length < candidates.length) {
+    log.info(`Dropped ${candidates.length - filteredResults.length} entr(ies) whose video is gone`);
+  }
 
   log.debug(`Results after movie filtering (min ${minDuration}s): ${filteredResults.length}`);
 

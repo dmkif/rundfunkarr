@@ -12,6 +12,9 @@ import {
 } from "./rulesets";
 import { getShowInfoByTvdbId } from "./shows";
 
+// The fixture URLs do not exist; keep the reachability probe off the network.
+vi.mock("@/lib/reachability", () => ({ dropGoneItems: vi.fn(async (items: unknown[]) => items) }));
+
 vi.mock("@/lib/fetch-retry", () => ({ fetchWithRetry: vi.fn() }));
 vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn(async () => null),

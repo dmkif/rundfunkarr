@@ -36,6 +36,24 @@ import { withoutYearSuffix } from "@/lib/show-names";
 const log = createLogger("Mediathek");
 import { QUERY_FIELDS, getMatchingSettings, getQualityPreference } from "./preferences";
 import { applyRulesetFilters } from "./ruleset-filter";
+import { preferredUrl } from "./item-filters";
+import { dropGoneItems } from "@/lib/reachability";
+
+/**
+ * Drop matched episodes whose video the broadcaster has taken down.
+ *
+ * The MediathekView index outlives the media, and Sonarr answers a failed
+ * download by blocklisting the release -- which then blocks the entry even
+ * after it becomes valid again. One probe per matched episode is enough,
+ * because a Mediathek asset expires as a whole.
+ */
+async function dropGoneEpisodes(matched: MatchedEpisodeInfo[]): Promise<MatchedEpisodeInfo[]> {
+  const alive = await dropGoneItems(matched, (info) => preferredUrl(info.item));
+  if (alive.length < matched.length) {
+    log.info(`Dropped ${matched.length - alive.length} episode(s) whose video is gone`);
+  }
+  return alive;
+}
 
 function getDesiredEpisodes(
   tvdbData: TvdbData,
@@ -252,7 +270,8 @@ export async function fetchSearchResultsById(
     seenUrls.add(item.url_video);
     return true;
   });
-  const newznabItems: NewznabItem[] = uniqueEpisodes.flatMap((info) =>
+  const reachableEpisodes = await dropGoneEpisodes(uniqueEpisodes);
+  const newznabItems: NewznabItem[] = reachableEpisodes.flatMap((info) =>
     generateRssItems(info, quality, stripSeriesUmlauts)
   );
   log.info(`Generated ${newznabItems.length} Newznab items (quality: ${quality})`);
@@ -311,7 +330,8 @@ export async function fetchSearchResultsByString(
   }
 
   const { matchedEpisodes, unmatchedItems } = await applyRulesetFilters(results);
-  const newznabItems: NewznabItem[] = matchedEpisodes.flatMap((info) =>
+  const reachableEpisodes = await dropGoneEpisodes(matchedEpisodes);
+  const newznabItems: NewznabItem[] = reachableEpisodes.flatMap((info) =>
     generateRssItems(info, quality, stripSeriesUmlauts)
   );
 
@@ -320,9 +340,12 @@ export async function fetchSearchResultsByString(
   // every title that merely contains "S01" across unrelated shows. Gate on a
   // non-empty q to keep the previous (matched-only) behavior for those queries.
   const hasTextQuery = !!trimmedQ;
-  const genericItems: NewznabItem[] = hasTextQuery
-    ? unmatchedItems.flatMap((item) => generateGenericRssItems(item, quality, stripSeriesUmlauts))
-    : [];
+  // Generic items skip the ruleset match, but they are handed to Sonarr just
+  // the same -- so they need the same reachability guarantee as matched ones.
+  const reachableUnmatched = hasTextQuery ? await dropGoneItems(unmatchedItems, preferredUrl) : [];
+  const genericItems: NewznabItem[] = reachableUnmatched.flatMap((item) =>
+    generateGenericRssItems(item, quality, stripSeriesUmlauts)
+  );
 
   const allItems = [...newznabItems, ...genericItems];
   const response = convertItemsToRss(allItems, limit, offset);
